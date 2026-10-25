@@ -1,21 +1,23 @@
-# init_db.py
-from app.database import Base, engine
-from app import models # ensure all models are imported
-# from app.models.rank import Rank
-# Create all tables
-Base.metadata.create_all(bind=engine)
-print("✅ Database tables created successfully.")
+# init_db.py  - create/upgrade the database schema with Alembic:  python init_db.py
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+
+from app.database import check_database
+
+ROOT = Path(__file__).resolve().parent
 
 
+def init_db() -> None:
+    if not check_database():
+        raise SystemExit("❌ PostgreSQL is unreachable. Check DATABASE_URL in .env and that the service is running.")
+    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(ROOT / "alembic"))
+    print("🗄️  Applying migrations (alembic upgrade head)...")
+    command.upgrade(cfg, "head")
+    print("✅ Database schema is up to date.")
 
-# delete_temp_table.py
-# import sqlite3
 
-# conn = sqlite3.connect("hrms.db")  # put your DB path
-# cursor = conn.cursor()
-
-# cursor.execute("DROP TABLE IF EXISTS _alembic_tmp_employees")
-# conn.commit()
-# conn.close()
-
-# print("Temporary table removed.")
+if __name__ == "__main__":
+    init_db()
