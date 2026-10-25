@@ -1,14 +1,8 @@
-"""SQLAlchemy base class, engine and session-factory helpers."""
-from __future__ import annotations
+# app/database.py
+from sqlalchemy import MetaData, create_engine, text
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-import asyncio
-from datetime import datetime
-
-from sqlalchemy import DateTime, MetaData, func, text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-from app.config import Settings
+from app.config import settings
 
 # Deterministic constraint names keep Alembic migrations stable.
 NAMING_CONVENTION = {
@@ -24,50 +18,37 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
-class TimestampMixin:
-    # Fetch DB-generated values (updated_at) via RETURNING after INSERT/UPDATE so async code never lazy-loads.
-    __mapper_args__ = {"eager_defaults": True}
+engine = create_engine(
+    settings.DATABASE_URL,
+    echo=settings.DB_ECHO,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
+    pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
+    pool_pre_ping=True,
+    connect_args={
+        "application_name": settings.APP_NAME.lower(),
+        "options": f"-c timezone=UTC -c statement_timeout={settings.DB_STATEMENT_TIMEOUT_MS}",
+    },
+)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
-    )
-
-
-def create_engine(settings: Settings) -> AsyncEngine:
-    """Create the async engine with bounded connection pooling."""
-    return create_async_engine(
-        settings.database_url,
-        echo=settings.db_echo,
-        pool_size=settings.db_pool_size,
-        max_overflow=settings.db_max_overflow,
-        pool_timeout=settings.db_pool_timeout_seconds,
-        pool_recycle=settings.db_pool_recycle_seconds,
-        pool_pre_ping=True,
-        connect_args={
-            "server_settings": {
-                "application_name": settings.app_name.lower(),
-                "timezone": "UTC",
-                "statement_timeout": str(settings.db_statement_timeout_ms),
-            }
-        },
-    )
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
-
-
-async def check_database(engine: AsyncEngine, timeout: float = 3.0) -> bool:
-    """Return True when a trivial query succeeds within `timeout` seconds."""
-    async def _ping() -> None:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-
+def get_db():
+    """One session per request. Routers/crud commit explicitly; un-committed work is rolled back on close."""
+    db = SessionLocal()
     try:
-        await asyncio.wait_for(_ping(), timeout=timeout)
+        yield db
+    finally:
+        db.close()
+
+
+def check_database(timeout_seconds: float = 3.0) -> bool:
+    """True when a trivial query succeeds. Never raises (used by health checks)."""
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text("SELECT 1"))
         return True
-    except Exception:  # noqa: BLE001 - health probe must never raise
+    except Exception:  # noqa: BLE001
         return False
