@@ -54,6 +54,24 @@ PERMISSIONS: list[dict] = [
     _p("Delete API Key", "delete_api_key", "API Key", "User can delete API keys"),
     # ---------- Audit ----------
     _p("Read Audit Log", "read_audit_log", "Audit", "User can read the audit log"),
+    # ---------- Employee ----------
+    _p("Show Employee", "show_employee", "Employee", "User can see employee"),
+    _p("Create Employee", "create_employee", "Employee", "User can create employee"),
+    _p("Read Employee", "read_employee", "Employee", "User can read employee"),
+    _p("Update Employee", "update_employee", "Employee", "User can update employee"),
+    _p("Delete Employee", "delete_employee", "Employee", "User can delete employee"),
+    # ---------- Image ----------
+    _p("Show Image", "show_image", "Image", "User can see image"),
+    _p("Create Image", "create_image", "Image", "User can create image"),
+    _p("Read Image", "read_image", "Image", "User can read image"),
+    _p("Update Image", "update_image", "Image", "User can update image"),
+    _p("Delete Image", "delete_image", "Image", "User can delete image"),
+    # ---------- Image Category ----------
+    _p("Show Image Category", "show_image_category", "ImageCategory", "User can see image category"),
+    _p("Create Image Category", "create_image_category", "ImageCategory", "User can create image category"),
+    _p("Read Image Category", "read_image_category", "ImageCategory", "User can read image category"),
+    _p("Update Image Category", "update_image_category", "ImageCategory", "User can update image category"),
+    _p("Delete Image Category", "delete_image_category", "ImageCategory", "User can delete image category"),
 ]
 
 ALL_CODES = [p["code"] for p in PERMISSIONS]
