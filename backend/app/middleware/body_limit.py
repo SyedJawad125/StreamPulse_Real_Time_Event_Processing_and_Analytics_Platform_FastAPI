@@ -1,11 +1,10 @@
+# app/middleware/body_limit.py
 """Reject oversized request bodies with 413 (checks Content-Length and streamed bytes)."""
 from __future__ import annotations
 
 import json
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
-
-from app.core.exceptions import error_body
 
 
 class BodySizeLimitMiddleware:
@@ -14,10 +13,8 @@ class BodySizeLimitMiddleware:
         self.max_bytes = max_bytes
 
     async def _reject(self, scope: Scope, send: Send) -> None:
-        rid = scope.get("state", {}).get("request_id")
-        body = json.dumps(
-            error_body("PAYLOAD_TOO_LARGE", f"Request body exceeds {self.max_bytes} bytes", rid)
-        ).encode()
+        body = json.dumps({"detail": f"Request body exceeds {self.max_bytes} bytes", "code": "PAYLOAD_TOO_LARGE",
+                           "request_id": scope.get("state", {}).get("request_id")}).encode()
         await send({"type": "http.response.start", "status": 413,
                     "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
         await send({"type": "http.response.body", "body": body})
@@ -26,7 +23,6 @@ class BodySizeLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-
         length = dict(scope["headers"]).get(b"content-length")
         if length and length.isdigit() and int(length) > self.max_bytes:
             await self._reject(scope, send)
