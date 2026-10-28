@@ -8,7 +8,7 @@ import uuid
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.core.logging import request_id_ctx
+from app.logging_config import request_id_ctx
 
 logger = logging.getLogger("streampulse.access")
 _VALID_ID = re.compile(r"^[A-Za-z0-9._\-]{8,64}$")
