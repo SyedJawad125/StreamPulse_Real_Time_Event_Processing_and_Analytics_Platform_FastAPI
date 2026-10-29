@@ -1,0 +1,239 @@
+# API Endpoints and Their Purposes
+
+## 1. Health Check API
+
+**Base category:** Health Endpoints  
+**Authentication:** Not required
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/health` | Checks overall system health, including database connectivity, workers, and queue status. |
+| GET | `/health/live` | Checks whether the application process is running. |
+| GET | `/health/ready` | Checks whether PostgreSQL is reachable and background workers are running. |
+
+## 2. Authentication API
+
+**Base path:** `/api/auth/`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/auth/v1/login/` | Authenticates a user using OAuth2 form data, with email as the username. |
+| POST | `/api/auth/login-json` | Authenticates a user using a JSON request body. |
+| POST | `/api/auth/refresh` | Refreshes an access token using a refresh token. |
+| POST | `/api/auth/logout` | Logs out the user by deleting the token on the client side. |
+| POST | `/api/auth/verify-token` | Verifies whether the current access token is valid. |
+| POST | `/api/auth/change-password` | Changes the password of the authenticated user. |
+| POST | `/api/auth/request-password-reset` | Requests a password reset and sends a reset email. |
+| POST | `/api/auth/reset-password` | Resets a password using a token received by email. |
+
+## 3. User Management API
+
+**Base path:** `/api/user/`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/user/v1/signup/` | Creates a new user; requires the `create_user` permission. |
+| POST | `/api/user/v1/login/` | Authenticates a user using email and password, with rate limiting. |
+| POST | `/api/user/v1/token/` | Provides OAuth2 password-flow authentication for the Swagger Authorize interface. |
+| POST | `/api/user/v1/refresh/` | Exchanges a refresh token for a new access-token and refresh-token pair. |
+| POST | `/api/user/v1/logout/` | Revokes the current access token. |
+| POST | `/api/user/v1/change-password/` | Changes the authenticated user's password and invalidates previous tokens. |
+| GET | `/api/user/v1/me/` | Returns the current user's profile, role, and permissions. |
+| GET | `/api/user/v1/all/users/` | Lists users with pagination and filtering options. |
+| GET | `/api/user/{id}` | Retrieves a specific user; accessible to the user themselves or users with `read_user` permission. |
+| PATCH | `/api/user/{id}` | Updates user information, including username, email, password, role, and account status. |
+| DELETE | `/api/user/{id}` | Soft-deletes a user. Permanent deletion is restricted to superusers. |
+| POST | `/api/user/{id}/restore` | Restores a soft-deleted user. |
+| POST | `/api/user/{id}/permissions/{permission_id}` | Grants a permission directly to a user. |
+| DELETE | `/api/user/{id}/permissions/{permission_id}` | Revokes a permission directly from a user. |
+
+## 4. Role Management API
+
+**Base path:** `/api/roles/`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/roles/v1/role/` | Lists roles with pagination, filtering, and associated permissions. |
+| GET | `/api/roles/v1/role/{id}` | Retrieves a specific role and its permissions. |
+| POST | `/api/roles/v1/role/` | Creates a new role; requires the `create_role` permission. |
+| PATCH | `/api/roles/v1/role/{id}` | Updates a role's name, description, code, or permissions. |
+| DELETE | `/api/roles/v1/role/{id}` | Soft-deletes a role. Permanent deletion is restricted to superusers. |
+| POST | `/api/roles/v1/role/{id}/restore` | Restores a soft-deleted role. |
+| POST | `/api/roles/v1/role/{role_id}/permissions/{permission_id}` | Adds a permission to a role. |
+| DELETE | `/api/roles/v1/role/{role_id}/permissions/{permission_id}` | Removes a permission from a role. |
+
+## 5. Permission Management API
+
+**Base path:** `/api/permissions/`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/permissions/v1/permission/` | Lists permissions with pagination and filtering. |
+| GET | `/api/permissions/v1/permission/{id}` | Retrieves a specific permission. |
+| GET | `/api/permissions/v1/permission/{id}/with-roles` | Retrieves a permission along with all roles that have it. |
+| POST | `/api/permissions/v1/permission/` | Creates a new permission. |
+| PATCH | `/api/permissions/v1/permission/{id}` | Updates an existing permission. |
+| DELETE | `/api/permissions/v1/permission/{id}` | Soft-deletes a permission. Permanent deletion is restricted to superusers. |
+| POST | `/api/permissions/v1/permission/{id}/restore` | Restores a soft-deleted permission. |
+
+## 6. API Key Management
+
+**Base path:** `/api/api-keys/`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/api-keys/v1/api-key/` | Creates an API key. The plaintext key is returned only in the creation response. |
+| GET | `/api/api-keys/v1/api-key/` | Lists API keys with filters such as `is_active` and `customer_id`. |
+| GET | `/api/api-keys/v1/api-key/{id}` | Retrieves a specific API key record. |
+| PATCH | `/api/api-keys/v1/api-key/{id}` | Updates an API key record. |
+| POST | `/api/api-keys/v1/api-key/{id}/revoke` | Revokes an API key; the operation is irreversible. |
+| DELETE | `/api/api-keys/v1/api-key/{id}` | Soft-deletes an API key. |
+
+## 7. Events API
+
+**Base path:** `/api/events/`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/events/v1/event/` | Ingests a single event using API key authentication. Returns HTTP `202 Accepted` when accepted for processing. |
+| POST | `/api/events/v1/event/batch/` | Ingests a bounded batch of events. |
+| POST | `/api/events/v1/stream-ticket/` | Generates a one-time ticket for authenticating Server-Sent Events (SSE) connections. |
+| GET | `/api/events/v1/stream/` | Streams real-time event-processing notifications using SSE. |
+| GET | `/api/events/v1/event/` | Lists events with filters for status, event type, source, customer, and date range. |
+| GET | `/api/events/v1/event/{id}` | Retrieves event details, processing attempts, and dead-letter history. |
+| POST | `/api/events/v1/event/{id}/reprocess` | Re-queues a failed or dead-letter event for processing. |
+| POST | `/api/events/v1/dead-letter/{id}/resolve` | Marks a dead-letter record as resolved without reprocessing the event. |
+
+## 8. Analytics API
+
+**Base path:** `/api/analytics/`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/analytics/v1/overview/` | Returns overview statistics, including total events, success rate, and failures. |
+| GET | `/api/analytics/v1/events-by-type/` | Groups events by event type. |
+| GET | `/api/analytics/v1/events-over-time/` | Shows event trends by minute, hour, or day. |
+| GET | `/api/analytics/v1/failure-rates/` | Calculates failure rates grouped by event type, source, or customer. |
+| GET | `/api/analytics/v1/processing-latency/` | Returns event-processing latency statistics. |
+| GET | `/api/analytics/v1/top-sources/` | Lists the leading event sources. |
+| GET | `/api/analytics/v1/queue-status/` | Reports worker queue status and database event counts. |
+| GET | `/api/analytics/v1/dead-letters/` | Lists dead-letter records with filtering options. |
+
+## 9. Audit Logs API
+
+**Base path:** `/api/audit/`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/audit/v1/audit-log/` | Retrieves the audit trail with filters for action, actor user ID, success status, and date range. |
+
+## 10. Employee Management API
+
+**Base path:** `/employees/`  
+**Status:** Reported as commented out in the code; verify before use.
+
+Planned or previously implemented functionality includes:
+
+- Creating, retrieving, updating, and deleting employee records.
+- Redis caching to improve data retrieval performance.
+- Bulk employee data uploads using Excel and CSV files.
+
+## 11. Image Management API
+
+**Base paths:** `/api/images/` and `/image_categories/`  
+**Status:** Reported as commented out in the code; verify before use.
+
+### Image endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/images/v1/image/` | Lists images with pagination and filtering. |
+| POST | `/api/images/v1/image/` | Uploads or creates an image record. |
+| GET | `/api/images/v1/image/{id}` | Retrieves a specific image. |
+| PATCH | `/api/images/v1/image/{id}` | Updates image information. |
+| DELETE | `/api/images/v1/image/{id}` | Deletes an image record. |
+
+### Image category endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/image_categories/` | Lists image categories. |
+| POST | `/image_categories/` | Creates a new image category. |
+| GET | `/image_categories/{id}` | Retrieves a specific category. |
+| PATCH | `/image_categories/{id}` | Updates a category. |
+| DELETE | `/image_categories/{id}` | Deletes a category. |
+
+## 12. House Price Prediction API
+
+**Base path:** `/api/house-price/`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/house-price/predict` | Predicts a house's price using a machine-learning model. |
+
+**Expected input fields:**
+- `size_sqft`: Property size in square feet.
+- `bedrooms`: Number of bedrooms.
+- `bathrooms`: Number of bathrooms.
+- `location`: Property location.
+- `age_years`: Property age in years.
+
+**Expected output:**
+- `predicted_price`: Predicted house price in USD.
+
+## 13. Hotel Image Upload API
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/-image/upload` | Uploads hotel images with associated metadata. |
+
+**Expected metadata:**
+- `name`: Image name.
+- `description`: Image description.
+- `category_id`: Associated image category identifier.
+
+**Note:** The unusual `/-image/upload` path should be verified against the actual URL configuration before deployment.
+
+## 14. Key System Features
+
+### Role-Based Access Control (RBAC)
+Provides role- and permission-based access control for protected operations, allowing access to be managed at the user and role levels.
+
+### Soft Deletion and Restoration
+Supports soft deletion for many entities, allowing records to be restored instead of permanently removed. Permanent deletion is restricted to superusers where implemented.
+
+### Audit Trail
+Records sensitive actions to support accountability, monitoring, and troubleshooting.
+
+### Asynchronous Event Processing
+Accepts events through ingestion endpoints and processes them through a queue-based background workflow.
+
+### Analytics and Monitoring
+Provides event statistics, failure rates, processing latency, source analysis, queue status, and dead-letter monitoring.
+
+### Rate Limiting
+Applies request limits to protect selected API endpoints against excessive requests and abuse.
+
+### Idempotency
+Supports idempotency keys for event ingestion to help prevent duplicate processing when requests are retried.
+
+### Real-Time Notifications
+Uses Server-Sent Events (SSE) to deliver live event-processing updates to connected clients.
+
+### API Key Authentication
+Allows API keys to authenticate event-ingestion requests and supports key creation, listing, updating, revocation, and deletion.
+
+---
+
+## 15. Important Implementation Notes
+
+1. **Verify authentication requirements:** Confirm which endpoints require JWT, session, API key, or permission-based authentication.
+2. **Verify duplicate login flows:** The authentication and user-management modules expose separate login and token endpoints; document their intended differences.
+3. **Clarify logout behavior:** Client-side token deletion alone does not invalidate a stolen access token. Server-side revocation behavior depends on the token implementation.
+4. **Protect API keys:** Store only appropriately hashed key material where possible, return plaintext keys only at creation, and never log secrets.
+5. **Confirm endpoint availability:** Employee and image-management endpoints are reported as commented out and should not be documented as active until verified.
+6. **Validate the house-price model:** Ensure the model is loaded correctly and input validation, error handling, and prediction output are defined.
+7. **Confirm idempotency behavior:** Document the idempotency-key format, scope, retention period, and duplicate-request response.
+8. **Document API responses:** Include example request bodies, response schemas, common HTTP status codes, and error messages for each endpoint.
+
+**Documentation scope:** This document is based on the supplied endpoint list. Endpoint availability, HTTP behavior, authentication rules, and implementation details should be verified against the actual application code and URL configuration.
