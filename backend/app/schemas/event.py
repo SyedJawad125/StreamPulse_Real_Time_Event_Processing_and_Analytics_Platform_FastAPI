@@ -1,8 +1,8 @@
+# app/schemas/event.py
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, List, Literal, Optional
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
@@ -13,14 +13,13 @@ SOURCE_PATTERN = r"^[A-Za-z0-9._\-]+$"
 
 class EventIn(BaseModel):
     """Event as submitted by a producer application."""
-
     model_config = ConfigDict(extra="forbid")
 
     event_id: str = Field(min_length=1, max_length=128, pattern=EVENT_ID_PATTERN,
-                          description="Producer-assigned unique id; used for deduplication")
+                          description="Producer-assigned unique id; used for de-duplication")
     event_type: str = Field(min_length=1, max_length=100, pattern=EVENT_TYPE_PATTERN, examples=["order.created"])
     source: str = Field(min_length=1, max_length=100, pattern=SOURCE_PATTERN, examples=["checkout-service"])
-    customer_id: str | None = Field(default=None, min_length=1, max_length=100, pattern=SOURCE_PATTERN)
+    customer_id: Optional[str] = Field(default=None, min_length=1, max_length=100, pattern=SOURCE_PATTERN)
     schema_version: str = Field(default="1.0", max_length=20)
     timestamp: AwareDatetime = Field(description="When the event occurred (timezone-aware ISO-8601)")
     payload: dict[str, Any]
@@ -28,95 +27,103 @@ class EventIn(BaseModel):
 
 
 class BatchEventsRequest(BaseModel):
-    # Items are validated one by one in the service so one bad event doesn't reject the whole batch.
-    events: list[Any] = Field(min_length=1)
+    # Items are validated one by one so a single bad event never rejects the whole batch.
+    events: List[Any] = Field(min_length=1)
 
 
 class IngestItemResult(BaseModel):
     index: int
-    event_id: str | None = None
+    event_id: Optional[str] = None
     status: Literal["accepted", "duplicate", "rejected"]
-    id: uuid.UUID | None = None
-    code: str | None = None
-    message: str | None = None
+    id: Optional[int] = None
+    code: Optional[str] = None
+    message: Optional[str] = None
 
 
 class EventAcceptedResponse(BaseModel):
     """Returned when an event is accepted. NOTE: accepted != processed."""
-
     status: Literal["accepted", "duplicate"]
-    id: uuid.UUID
+    id: int
     event_id: str
-    processing_status: str | None = Field(
-        default=None, description="Pipeline state at acceptance time (RECEIVED or QUEUED), never PROCESSED"
-    )
+    processing_status: Optional[str] = Field(
+        default=None, description="Pipeline state at acceptance time (RECEIVED or QUEUED) - never PROCESSED")
 
 
 class BatchIngestResponse(BaseModel):
     accepted: int
     duplicates: int
     rejected: int
-    results: list[IngestItemResult]
+    results: List[IngestItemResult]
 
 
 class ProcessingAttemptOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    id: uuid.UUID
+    id: int
     attempt_number: int
     started_at: datetime
-    completed_at: datetime | None = None
+    completed_at: Optional[datetime] = None
     outcome: str
-    duration_ms: float | None = None
-    error: str | None = None
+    duration_ms: Optional[float] = None
+    error: Optional[str] = None
+
+
+class DeadLetterOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    event_id: int
+    failure_reason: str
+    retry_count: int
+    dead_lettered_at: datetime
+    resolution_status: str
+    resolved_at: Optional[datetime] = None
+    resolved_by_user_id: Optional[int] = None
+    resolution_details: Optional[str] = None
 
 
 class EventSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    id: uuid.UUID
+    id: int
     event_id: str
     event_type: str
     source: str
-    customer_id: str | None = None
+    customer_id: Optional[str] = None
     schema_version: str
     occurred_at: datetime
     status: str
     retry_count: int
     duplicate_count: int
     received_at: datetime
-    processing_started_at: datetime | None = None
-    completed_at: datetime | None = None
-    processing_duration_ms: float | None = None
-    last_error: str | None = None
-
-
-class DeadLetterOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: uuid.UUID
-    event_id: uuid.UUID
-    failure_reason: str
-    retry_count: int
-    dead_lettered_at: datetime
-    resolution_status: str
-    resolved_at: datetime | None = None
-    resolved_by_user_id: uuid.UUID | None = None
-    resolution_details: str | None = None
+    processing_started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    processing_duration_ms: Optional[float] = None
+    last_error: Optional[str] = None
 
 
 class EventDetail(EventSummary):
-    payload: dict[str, Any] | None = None  # None when redacted for the caller
-    metadata: dict[str, Any] | None = None
+    payload: Optional[dict[str, Any]] = None  # None when redacted for the caller
+    metadata: Optional[dict[str, Any]] = None
     payload_redacted: bool = False
-    next_retry_at: datetime | None = None
-    attempts: list[ProcessingAttemptOut] = []
-    dead_letters: list[DeadLetterOut] = []
+    next_retry_at: Optional[datetime] = None
+    attempts: List[ProcessingAttemptOut] = []
+    dead_letters: List[DeadLetterOut] = []
+
+
+class PaginatedEvents(BaseModel):
+    count: int
+    data: List[EventSummary]
+
+
+class EventListResponse(BaseModel):
+    status: str
+    result: PaginatedEvents
 
 
 class ReprocessResponse(BaseModel):
-    id: uuid.UUID
+    id: int
     event_id: str
     status: str
     queued: bool
 
 
 class DeadLetterResolveRequest(BaseModel):
-    details: str | None = Field(default=None, max_length=1000)
+    details: Optional[str] = Field(default=None, max_length=1000)
