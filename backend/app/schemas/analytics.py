@@ -1,4 +1,6 @@
+# app/schemas/analytics.py
 from datetime import datetime
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -20,19 +22,19 @@ class OverviewResponse(BaseModel):
     retries_total: int
     dead_letters_open: int
     events_per_minute: float
-    success_rate: float | None  # processed / (processed + failed); None when nothing finished
-    failure_rate: float | None
-    avg_processing_latency_ms: float | None
+    success_rate: Optional[float]  # processed / (processed + failed); None when nothing finished
+    failure_rate: Optional[float]
+    avg_processing_latency_ms: Optional[float]
 
 
 class CountItem(BaseModel):
-    key: str | None
+    key: Optional[str]
     count: int
 
 
 class EventsByTypeResponse(BaseModel):
     window: TimeWindow
-    items: list[CountItem]
+    items: List[CountItem]
 
 
 class TimeBucket(BaseModel):
@@ -45,43 +47,43 @@ class TimeBucket(BaseModel):
 class EventsOverTimeResponse(BaseModel):
     window: TimeWindow
     interval: str
-    buckets: list[TimeBucket]
+    buckets: List[TimeBucket]
 
 
 class FailureRateItem(BaseModel):
-    key: str | None
+    key: Optional[str]
     total: int
     processed: int
     failed: int
-    failure_rate: float | None
+    failure_rate: Optional[float]
 
 
 class FailureRatesResponse(BaseModel):
     window: TimeWindow
     group_by: str
-    items: list[FailureRateItem]
+    items: List[FailureRateItem]
 
 
 class LatencyStats(BaseModel):
-    key: str | None = None
+    key: Optional[str] = None
     samples: int
-    avg_ms: float | None
-    min_ms: float | None
-    p50_ms: float | None
-    p95_ms: float | None
-    p99_ms: float | None
-    max_ms: float | None
+    avg_ms: Optional[float]
+    min_ms: Optional[float]
+    p50_ms: Optional[float]
+    p95_ms: Optional[float]
+    p99_ms: Optional[float]
+    max_ms: Optional[float]
 
 
 class LatencyResponse(BaseModel):
     window: TimeWindow
     overall: LatencyStats
-    groups: list[LatencyStats] = []
+    groups: List[LatencyStats] = []
 
 
 class TopSourcesResponse(BaseModel):
     window: TimeWindow
-    items: list[CountItem]
+    items: List[CountItem]
 
 
 class QueueStatusResponse(BaseModel):
@@ -92,19 +94,29 @@ class QueueStatusResponse(BaseModel):
     workers_alive: int
     running: bool
     saturated: bool
-    db_counts: dict[str, int]
+    db_counts: Dict[str, int]
 
 
 class DeadLetterItem(BaseModel):
-    id: str
-    event_pk: str
+    id: int
+    event_pk: int
     event_id: str
     event_type: str
     source: str
-    customer_id: str | None = None
+    customer_id: Optional[str] = None
     failure_reason: str
     retry_count: int
     dead_lettered_at: datetime
     resolution_status: str
-    resolved_at: datetime | None = None
-    resolution_details: str | None = None
+    resolved_at: Optional[datetime] = None
+    resolution_details: Optional[str] = None
+
+
+class PaginatedDeadLetters(BaseModel):
+    count: int
+    data: List[DeadLetterItem]
+
+
+class DeadLetterListResponse(BaseModel):
+    status: str
+    result: PaginatedDeadLetters
