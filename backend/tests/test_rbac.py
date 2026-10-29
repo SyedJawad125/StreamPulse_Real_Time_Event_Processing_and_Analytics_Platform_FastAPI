@@ -1,119 +1,206 @@
 import pytest
 
-from tests.helpers import PASSWORD, auth_headers, ingest, make_user, wait_status
-
-API = "/api/v1"
+from tests.helpers import (AUD, EV, K, P, PASSWORD, R, U, ingest, login_headers, make_user, wait_status)
 
 
-async def test_unauthenticated_requests_are_401(h):
-    for method, path in [("get", "/users"), ("get", "/roles"), ("get", "/permissions"), ("get", "/api-keys"),
-                         ("get", "/events"), ("get", "/analytics/overview"), ("get", "/admin/audit-logs"),
-                         ("post", "/api-keys")]:
-        r = await getattr(h.client, method)(API + path)
-        assert r.status_code == 401, (method, path, r.status_code)
+def test_unauthenticated_requests_are_401(client):
+    for method, path in [("get", f"{U}/v1/all/users/"), ("get", R), ("get", P), ("get", K), ("get", EV),
+                         ("get", "/api/analytics/v1/overview/"), ("get", AUD), ("post", K), ("get", f"{U}/v1/me/"),
+                         ("post", R), ("post", P), ("get", f"{P}1")]:
+        assert getattr(client, method)(path).status_code == 401, (method, path)
 
 
 @pytest.mark.parametrize("role,path,expected", [
-    ("VIEWER", "/users", 403), ("VIEWER", "/api-keys", 403), ("VIEWER", "/admin/audit-logs", 403),
-    ("VIEWER", "/events", 200), ("VIEWER", "/analytics/overview", 200), ("VIEWER", "/roles", 403),
-    ("ANALYST", "/users", 403), ("ANALYST", "/events", 200), ("ANALYST", "/permissions", 403),
-    ("OPERATOR", "/users", 403), ("OPERATOR", "/events", 200), ("OPERATOR", "/api-keys", 403),
-    ("ADMIN", "/users", 200), ("ADMIN", "/api-keys", 200), ("ADMIN", "/admin/audit-logs", 200),
-    ("ADMIN", "/permissions", 200), ("ADMIN", "/roles", 200),
+    ("viewer", f"{U}/v1/all/users/", 403), ("viewer", K, 403), ("viewer", AUD, 403), ("viewer", R, 403),
+    ("viewer", P, 403), ("viewer", EV, 200), ("viewer", "/api/analytics/v1/overview/", 200),
+    ("analyst", f"{U}/v1/all/users/", 403), ("analyst", EV, 200), ("analyst", P, 403),
+    ("operator", f"{U}/v1/all/users/", 403), ("operator", EV, 200), ("operator", K, 403),
+    ("su", f"{U}/v1/all/users/", 200), ("su", K, 200), ("su", AUD, 200), ("su", P, 200), ("su", R, 200),
 ])
-async def test_role_matrix_get(h, role, path, expected):
-    await make_user(h, "user1", [role])
-    r = await h.client.get(API + path, headers=await auth_headers(h, "user1"))
-    assert r.status_code == expected, r.text
+def test_role_matrix_get(client, role, path, expected):
+    make_user("user1@example.com", role)
+    assert client.get(path, headers=login_headers(client, "user1@example.com")).status_code == expected
 
 
-async def test_non_admins_cannot_mutate(h, viewer_headers, operator_headers, analyst_headers):
-    for headers in (viewer_headers, operator_headers, analyst_headers):
-        assert (await h.client.post(f"{API}/users", headers=headers, json={
-            "username": "evil", "email": "e@e.com", "password": PASSWORD})).status_code == 403
-        assert (await h.client.post(f"{API}/api-keys", headers=headers, json={"name": "x"})).status_code == 403
-        assert (await h.client.post(f"{API}/roles", headers=headers, json={"name": "Evil", "code_name": "EVIL"})).status_code == 403
+def test_non_admins_cannot_mutate(client, viewer_headers, operator_headers, analyst_headers):
+    for h in (viewer_headers, operator_headers, analyst_headers):
+        assert client.post(f"{U}/v1/signup/", headers=h, json={"email": "e@e.com", "password": PASSWORD, "role_id": 1}).status_code == 403
+        assert client.post(K, headers=h, json={"name": "x"}).status_code == 403
+        assert client.post(R, headers=h, json={"name": "Evil", "description": "d", "code": "evil"}).status_code == 403
+        assert client.post(P, headers=h, json={"name": "P", "description": "d", "code": "p_x"}).status_code == 403
 
 
-async def test_admin_user_lifecycle_and_role_assignment(h, admin_headers):
-    r = await h.client.post(f"{API}/users", headers=admin_headers, json={
-        "username": "New.User", "email": "NEW@Example.com", "password": PASSWORD, "role_codes": ["viewer"]})
+def _role_id(client, headers, code):
+    items = client.get(R, params={"code": code}, headers=headers).json()["result"]["data"]
+    return next(r["id"] for r in items if r["code"] == code)
+
+
+def test_admin_user_lifecycle(client, admin_headers):
+    viewer_role = _role_id(client, admin_headers, "viewer")
+    r = client.post(f"{U}/v1/signup/", headers=admin_headers, json={
+        "username": "new.user", "email": "NEW@Example.com", "password": PASSWORD, "role_id": viewer_role})
     assert r.status_code == 201, r.text
     u = r.json()
-    assert u["username"] == "new.user" and u["email"] == "new@example.com" and u["roles"][0]["code_name"] == "VIEWER"
-    dup = await h.client.post(f"{API}/users", headers=admin_headers, json={
-        "username": "new.user", "email": "other@example.com", "password": PASSWORD})
-    assert dup.status_code == 409
-    bad_role = await h.client.post(f"{API}/users", headers=admin_headers, json={
-        "username": "zed", "email": "z@example.com", "password": PASSWORD, "role_codes": ["NOPE"]})
-    assert bad_role.status_code == 422 and bad_role.json()["error"]["code"] == "UNKNOWN_ROLE"
-    weak = await h.client.post(f"{API}/users", headers=admin_headers, json={
-        "username": "weak1", "email": "w@example.com", "password": "short"})
-    assert weak.status_code == 422
+    assert u["email"] == "new@example.com" and u["role_id"] == viewer_role and "hashed_password" not in r.text
+    assert client.post(f"{U}/v1/signup/", headers=admin_headers, json={
+        "email": "new@example.com", "password": PASSWORD, "role_id": viewer_role}).status_code == 400
+    assert client.post(f"{U}/v1/signup/", headers=admin_headers, json={
+        "email": "z@example.com", "password": PASSWORD}).json()["code"] == "ROLE_REQUIRED"
+    assert client.post(f"{U}/v1/signup/", headers=admin_headers, json={
+        "email": "z@example.com", "password": PASSWORD, "role_id": 99999}).status_code == 404
+    assert client.post(f"{U}/v1/signup/", headers=admin_headers, json={
+        "email": "w@example.com", "password": "short", "role_id": viewer_role}).status_code == 422
 
-    # promote to OPERATOR; new permissions take effect on the very next request
-    tok = await auth_headers(h, "new.user")
-    assert (await h.client.get(f"{API}/analytics/overview", headers=tok)).status_code == 200
-    up = await h.client.put(f"{API}/users/{u['id']}/roles", headers=admin_headers, json={"role_codes": ["OPERATOR"]})
-    assert up.status_code == 200 and up.json()["roles"][0]["code_name"] == "OPERATOR"
-    p = await h.client.patch(f"{API}/users/{u['id']}", headers=admin_headers, json={"first_name": "New"})
-    assert p.json()["first_name"] == "New"
-    lst = await h.client.get(f"{API}/users?role=OPERATOR&limit=5", headers=admin_headers)
-    assert lst.json()["total"] == 1
+    tok = login_headers(client, "new@example.com")
+    assert client.get("/api/analytics/v1/overview/", headers=tok).status_code == 200
+    operator_role = _role_id(client, admin_headers, "operator")
+    up = client.patch(f"{U}/{u['id']}", headers=admin_headers, json={"role_id": operator_role, "username": "renamed"})
+    assert up.status_code == 200 and up.json()["role_id"] == operator_role and up.json()["username"] == "renamed"
+    assert client.get(f"{U}/v1/all/users/", params={"role_id": operator_role}, headers=admin_headers).json()["result"]["count"] == 1
+    assert client.get(f"{U}/v1/all/users/", params={"search": "renam"}, headers=admin_headers).json()["result"]["count"] == 1
+    assert client.get(f"{U}/{u['id']}", headers=admin_headers).status_code == 200
 
 
-async def test_cannot_deactivate_self_or_last_admin(h, admin_headers):
-    me = (await h.client.get(f"{API}/auth/me", headers=admin_headers)).json()
-    r = await h.client.post(f"{API}/users/{me['id']}/deactivate", headers=admin_headers)
-    assert r.status_code == 403 and r.json()["error"]["code"] == "SELF_DEACTIVATION"
-    r = await h.client.put(f"{API}/users/{me['id']}/roles", headers=admin_headers, json={"role_codes": ["VIEWER"]})
-    assert r.status_code == 409 and r.json()["error"]["code"] == "LAST_ADMIN"
-    # with a second admin, the first may be demoted by the second
-    await make_user(h, "admin2", ["ADMIN"])
-    h2 = await auth_headers(h, "admin2")
-    assert (await h.client.post(f"{API}/users/{me['id']}/deactivate", headers=h2)).status_code == 200
-    me2 = (await h.client.get(f"{API}/auth/me", headers=h2)).json()
-    r = await h.client.post(f"{API}/users/{me2['id']}/deactivate", headers=h2)
-    assert r.status_code == 403  # self
+def test_users_can_read_and_edit_only_themselves(client, viewer_headers, operator_headers):
+    me = client.get(f"{U}/v1/me/", headers=viewer_headers).json()
+    other = client.get(f"{U}/v1/me/", headers=operator_headers).json()
+    assert client.get(f"{U}/{me['id']}", headers=viewer_headers).status_code == 200
+    assert client.get(f"{U}/{other['id']}", headers=viewer_headers).status_code == 403
+    assert client.patch(f"{U}/{me['id']}", headers=viewer_headers, json={"username": "mine"}).json()["username"] == "mine"
+    assert client.patch(f"{U}/{other['id']}", headers=viewer_headers, json={"username": "hacked"}).status_code == 403
 
 
-async def test_custom_role_and_permission_management(h, admin_headers):
-    r = await h.client.post(f"{API}/roles", headers=admin_headers, json={"name": "Support", "code_name": "support"})
-    assert r.status_code == 201 and r.json()["code_name"] == "SUPPORT" and r.json()["is_system"] is False
+def test_privilege_escalation_is_blocked(client, viewer_headers, operator_headers, admin_headers):
+    me = client.get(f"{U}/v1/me/", headers=viewer_headers).json()
+    su_role = _role_id(client, admin_headers, "su")
+    for body in ({"is_superuser": True}, {"role_id": su_role}, {"role_id": 1}, {"is_active": False}):
+        r = client.patch(f"{U}/{me['id']}", headers=viewer_headers, json=body)
+        assert r.status_code == 403, (body, r.text)
+    r = client.patch(f"{U}/{me['id']}", headers=viewer_headers, json={"password": "Br4nd-New-Passw0rd"})
+    assert r.status_code == 403 and r.json()["code"] == "USE_CHANGE_PASSWORD"
+    assert client.get(f"{U}/v1/me/", headers=viewer_headers).json()["is_superuser"] is False
+
+
+def test_only_superusers_create_superusers_and_assign_su_role(client, admin_headers):
+    # an "HR admin": may create users and assign roles, but is not a superuser
+    ops = client.post(R, headers=admin_headers, json={"name": "UserAdmin", "description": "d", "code": "user_admin",
+                                                       "permission_ids": []}).json()
+    perms = {p["code"]: p["id"] for p in client.get(P, params={"limit": 100}, headers=admin_headers).json()["result"]["data"]}
+    client.patch(f"{R}{ops['id']}", headers=admin_headers, json={"permission_ids": [perms["create_user"], perms["update_user"], perms["read_user"]]})
+    make_user("hr@example.com", "user_admin")
+    hr = login_headers(client, "hr@example.com")
+    viewer_role = _role_id(client, admin_headers, "viewer")
+    su_role = _role_id(client, admin_headers, "su")
+
+    assert client.post(f"{U}/v1/signup/", headers=hr, json={"email": "s1@example.com", "password": PASSWORD,
+                                                            "is_superuser": True}).status_code == 403
+    assert client.post(f"{U}/v1/signup/", headers=hr, json={"email": "s2@example.com", "password": PASSWORD,
+                                                            "role_id": su_role}).status_code == 403
+    # a role holding permissions the HR admin lacks cannot be handed out either (read_event is not theirs)
+    assert client.post(f"{U}/v1/signup/", headers=hr, json={"email": "s3@example.com", "password": PASSWORD,
+                                                            "role_id": viewer_role}).json()["code"] == "CANNOT_GRANT"
+
+
+def test_cannot_grant_permissions_you_do_not_hold(client, admin_headers):
+    perms = {p["code"]: p["id"] for p in client.get(P, params={"limit": 100}, headers=admin_headers).json()["result"]["data"]}
+    r = client.post(R, headers=admin_headers, json={"name": "RoleAdmin", "description": "d", "code": "role_admin",
+                                                    "permission_ids": [perms["create_role"], perms["update_role"], perms["read_role"]]})
+    assert r.status_code == 201
+    make_user("ra@example.com", "role_admin")
+    ra = login_headers(client, "ra@example.com")
+    ok = client.post(R, headers=ra, json={"name": "Mini", "description": "d", "code": "mini", "permission_ids": [perms["read_role"]]})
+    assert ok.status_code == 201
+    bad = client.post(R, headers=ra, json={"name": "Big", "description": "d", "code": "big", "permission_ids": [perms["delete_user"]]})
+    assert bad.status_code == 403 and bad.json()["code"] == "CANNOT_GRANT"
+    mine = _role_id(client, ra, "role_admin")
+    assert client.patch(f"{R}{mine}", headers=ra, json={"permission_ids": [perms["read_role"], perms["read_user"]]}).status_code == 403
+
+
+def test_cannot_remove_or_demote_last_superuser_or_self(client, admin_headers):
+    me = client.get(f"{U}/v1/me/", headers=admin_headers).json()
+    assert client.patch(f"{U}/{me['id']}", headers=admin_headers, json={"is_active": False}).json()["code"] == "SELF_DEACTIVATION"
+    assert client.patch(f"{U}/{me['id']}", headers=admin_headers, json={"is_superuser": False}).json()["code"] == "LAST_SUPERUSER"
+    assert client.delete(f"{U}/{me['id']}", headers=admin_headers).json()["code"] == "SELF_DELETE"
+    other = make_user("admin2@example.com", "su", superuser=True)
+    h2 = login_headers(client, "admin2@example.com")
+    assert client.patch(f"{U}/{me['id']}", headers=h2, json={"is_active": False}).status_code == 200  # 2 superusers: ok
+    assert client.delete(f"{U}/{other}", headers=h2).json()["code"] == "SELF_DELETE"
+
+
+def test_permanent_delete_is_superuser_only(client, admin_headers):
+    make_user("userdel@example.com", "su")  # holds delete_user via the Super ROLE but is not a superuser
+    ud = login_headers(client, "userdel@example.com")
+    target = make_user("t@example.com", "viewer")
+    assert client.delete(f"{U}/{target}", params={"permanent": True}, headers=ud).json()["code"] == "SUPERUSER_ONLY"
+    assert client.delete(f"{U}/{target}", params={"permanent": True}, headers=admin_headers).status_code == 200
+    assert client.get(f"{U}/{target}", headers=admin_headers).status_code == 404
+
+
+def test_custom_role_permissions_take_effect_immediately(client, admin_headers):
+    perms = {p["code"]: p["id"] for p in client.get(P, params={"limit": 100}, headers=admin_headers).json()["result"]["data"]}
+    r = client.post(R, headers=admin_headers, json={"name": "Support", "description": "Help desk", "code": "support",
+                                                    "permission_ids": [perms["read_event"]]})
+    assert r.status_code == 201 and {p["code"] for p in r.json()["permissions"]} == {"read_event"}
     rid = r.json()["id"]
-    assert (await h.client.post(f"{API}/roles", headers=admin_headers, json={"name": "Support", "code_name": "SUPPORT"})).status_code == 409
+    assert client.post(R, headers=admin_headers, json={"name": "Dup", "description": "d", "code": "support"}).status_code == 400
+    assert client.post(R, headers=admin_headers, json={"name": "Bad", "description": "d", "code": "bad", "permission_ids": [99999]}).status_code == 400
 
-    perms = await h.client.put(f"{API}/roles/{rid}/permissions", headers=admin_headers,
-                               json={"permission_codes": ["events.read", "analytics.read"]})
-    assert perms.status_code == 200 and {p["code_name"] for p in perms.json()["permissions"]} == {"events.read", "analytics.read"}
-    unknown = await h.client.put(f"{API}/roles/{rid}/permissions", headers=admin_headers, json={"permission_codes": ["bogus.perm"]})
-    assert unknown.status_code == 422
+    make_user("sup@example.com", "support")
+    sup = login_headers(client, "sup@example.com")
+    assert client.get(EV, headers=sup).status_code == 200 and client.get(f"{U}/v1/all/users/", headers=sup).status_code == 403
+    client.delete(f"{R}{rid}/permissions/{perms['read_event']}", headers=admin_headers)   # revoke -> next request denied
+    assert client.get(EV, headers=sup).status_code == 403
+    client.post(f"{R}{rid}/permissions/{perms['read_analytics']}", headers=admin_headers)
+    assert client.get("/api/analytics/v1/overview/", headers=sup).status_code == 200
 
-    await make_user(h, "sup", ["SUPPORT"])
-    th = await auth_headers(h, "sup")
-    assert (await h.client.get(f"{API}/events", headers=th)).status_code == 200
-    assert (await h.client.get(f"{API}/users", headers=th)).status_code == 403
-    # permission revoked -> next request is denied (no stale cache)
-    await h.client.put(f"{API}/roles/{rid}/permissions", headers=admin_headers, json={"permission_codes": []})
-    assert (await h.client.get(f"{API}/events", headers=th)).status_code == 403
-
-    assert (await h.client.patch(f"{API}/roles/{rid}", headers=admin_headers, json={"description": "Help desk"})).json()["description"] == "Help desk"
-    assert (await h.client.delete(f"{API}/roles/{rid}", headers=admin_headers)).status_code == 204
-    assert (await h.client.get(f"{API}/roles/{rid}", headers=admin_headers)).status_code == 404
-
-
-async def test_system_roles_are_protected(h, admin_headers):
-    roles = {r["code_name"]: r for r in (await h.client.get(f"{API}/roles", headers=admin_headers)).json()}
-    assert set(roles) >= {"ADMIN", "OPERATOR", "ANALYST", "VIEWER"}
-    assert len(roles["ADMIN"]["permissions"]) == len((await h.client.get(f"{API}/permissions", headers=admin_headers)).json())
-    assert (await h.client.delete(f"{API}/roles/{roles['VIEWER']['id']}", headers=admin_headers)).status_code == 403
-    r = await h.client.put(f"{API}/roles/{roles['ADMIN']['id']}/permissions", headers=admin_headers, json={"permission_codes": []})
-    assert r.status_code == 403
+    assert client.delete(f"{R}{rid}", headers=admin_headers).json()["code"] == "ROLE_IN_USE"   # still assigned
+    with __import__("app.database", fromlist=["x"]).SessionLocal() as db:
+        from app.models import User
+        db.query(User).filter(User.email == "sup@example.com").update({"role_id": None}); db.commit()
+    assert client.delete(f"{R}{rid}", headers=admin_headers).status_code == 200            # soft delete
+    assert client.get(f"{R}{rid}", headers=admin_headers).status_code == 404
+    assert client.post(f"{R}{rid}/restore", headers=admin_headers).status_code == 200
 
 
-async def test_viewer_payload_is_redacted_but_analyst_sees_it(h, key_headers, viewer_headers, analyst_headers):
-    created = await ingest(h, key_headers, payload={"order_id": "o1", "amount": 5, "currency": "USD", "card_last4": "4242"})
-    v = await wait_status(h, viewer_headers, created["id"], {"PROCESSED"})
+def test_super_role_is_protected(client, admin_headers):
+    su = _role_id(client, admin_headers, "su")
+    assert client.patch(f"{R}{su}", headers=admin_headers, json={"permission_ids": []}).json()["code"] == "PROTECTED_ROLE"
+    assert client.patch(f"{R}{su}", headers=admin_headers, json={"code": "x"}).json()["code"] == "PROTECTED_ROLE"
+    assert client.delete(f"{R}{su}", headers=admin_headers).json()["code"] == "PROTECTED_ROLE"
+    assert client.delete(f"{R}{su}/permissions/1", headers=admin_headers).status_code == 403
+
+
+def test_direct_user_permissions(client, admin_headers):
+    perms = {p["code"]: p["id"] for p in client.get(P, params={"limit": 100}, headers=admin_headers).json()["result"]["data"]}
+    uid = make_user("direct@example.com", "viewer")
+    h = login_headers(client, "direct@example.com")
+    assert client.get(K, headers=h).status_code == 403
+    r = client.post(f"{U}/{uid}/permissions/{perms['read_api_key']}", headers=admin_headers)
+    assert r.status_code == 200 and [p["code"] for p in r.json()["permissions"]] == ["read_api_key"]
+    assert client.get(K, headers=h).status_code == 200                       # role perms + direct perms
+    assert client.get(f"{U}/v1/me/", headers=h).json()["permissions"]["read_api_key"] is True
+    client.delete(f"{U}/{uid}/permissions/{perms['read_api_key']}", headers=admin_headers)
+    assert client.get(K, headers=h).status_code == 403
+
+
+def test_permission_crud_and_protection(client, admin_headers):
+    r = client.post(P, headers=admin_headers, json={"name": "Export", "description": "d", "code": "export_x", "module_name": "Misc"})
+    assert r.status_code == 201
+    pid = r.json()["id"]
+    assert client.post(P, headers=admin_headers, json={"name": "Export", "description": "d", "code": "export_x"}).status_code == 400
+    assert client.patch(f"{P}{pid}", headers=admin_headers, json={"description": "new"}).json()["description"] == "new"
+    assert client.get(f"{P}{pid}/with-roles", headers=admin_headers).json()["roles"] == []
+    ev = next(p for p in client.get(P, params={"code": "read_event"}, headers=admin_headers).json()["result"]["data"])
+    assert client.delete(f"{P}{ev['id']}", headers=admin_headers).json()["code"] == "PERMISSION_IN_USE"
+    assert client.delete(f"{P}{pid}", headers=admin_headers).status_code == 200
+    assert client.get(f"{P}{pid}", headers=admin_headers).status_code == 404
+    assert client.post(f"{P}{pid}/restore", headers=admin_headers).status_code == 200
+    assert client.delete(f"{P}{pid}", params={"permanent": True}, headers=admin_headers).status_code == 200
+
+
+def test_viewer_payload_is_redacted_but_analyst_sees_it(client, key_headers, viewer_headers, analyst_headers):
+    created = ingest(client, key_headers, payload={"order_id": "o1", "amount": 5, "currency": "USD", "card_last4": "4242"})
+    v = wait_status(client, viewer_headers, created["id"], {"PROCESSED"})
     assert v["payload"] is None and v["metadata"] is None and v["payload_redacted"] is True
-    a = await wait_status(h, analyst_headers, created["id"], {"PROCESSED"})
+    a = wait_status(client, analyst_headers, created["id"], {"PROCESSED"})
     assert a["payload"]["card_last4"] == "4242" and a["payload_redacted"] is False
