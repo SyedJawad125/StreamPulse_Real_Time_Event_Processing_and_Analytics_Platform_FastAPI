@@ -3,129 +3,165 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from sqlalchemy import select, update
 
-from app.models.user import User
-from tests.helpers import PASSWORD, auth_headers, make_user
+from app.config import settings
+from app.database import SessionLocal
+from app.models import User
+from tests.helpers import PASSWORD, U, login_headers, make_user
 
 
-async def login(h, username="admin", password=PASSWORD):
-    return await h.client.post("/api/v1/auth/login", json={"username": username, "password": password})
+def login(client, email="admin@example.com", password=PASSWORD):
+    return client.post(f"{U}/v1/login/", json={"email": email, "password": password})
 
 
-async def test_login_me_and_permissions(h):
-    await make_user(h, "admin", ["ADMIN"])
-    r = await login(h)
+def test_login_shape_me_and_permissions(client):
+    make_user("admin@example.com", "su", superuser=True)
+    r = login(client)
     assert r.status_code == 200
     body = r.json()
-    assert body["token_type"] == "bearer" and body["user"]["username"] == "admin"
-    assert "password_hash" not in r.text
-    me = await h.client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"})
-    assert me.status_code == 200 and "users.manage" in me.json()["permissions"]
-    assert me.json()["roles"][0]["code_name"] == "ADMIN"
+    assert body["message"] == "Login successful" and body["token_type"] == "bearer"
+    assert body["user"]["email"] == "admin@example.com" and body["user"]["is_superuser"] is True
+    assert body["user"]["role_name"] == "Super" and body["permissions"]["read_event"] is True
+    assert "hashed_password" not in r.text
+    me = client.get(f"{U}/v1/me/", headers={"Authorization": f"Bearer {body['access_token']}"})
+    assert me.status_code == 200 and me.json()["permissions"]["create_user"] is True and me.json()["role_name"] == "Super"
 
 
-async def test_login_with_email_case_insensitive(h):
-    await make_user(h, "alice", ["VIEWER"])
-    assert (await login(h, "ALICE@example.com")).status_code == 200
+def test_login_is_case_insensitive_and_regular_user_permissions(client):
+    make_user("viewer@example.com", "viewer")
+    r = login(client, "VIEWER@Example.com")
+    perms = r.json()["permissions"]
+    assert r.status_code == 200 and perms["read_event"] is True and perms["create_user"] is False
+    assert set(perms) >= {"read_role", "reprocess_event", "read_audit_log"}  # every permission is listed (True/False)
 
 
-async def test_wrong_password_and_unknown_user_look_identical(h):
-    await make_user(h, "admin", ["ADMIN"])
-    a = await login(h, "admin", "wrong-password-1")
-    b = await login(h, "ghost", "wrong-password-1")
+def test_wrong_password_and_unknown_user_look_identical(client):
+    make_user("admin@example.com", "su", superuser=True)
+    a = login(client, "admin@example.com", "wrong-password-1")
+    b = login(client, "ghost@example.com", "wrong-password-1")
     assert a.status_code == b.status_code == 401
-    assert a.json()["error"]["code"] == b.json()["error"]["code"] == "INVALID_CREDENTIALS"
-    assert a.json()["error"]["message"] == b.json()["error"]["message"]
+    assert a.json()["code"] == b.json()["code"] == "INVALID_CREDENTIALS" and a.json()["detail"] == b.json()["detail"]
 
 
-async def test_missing_malformed_and_tampered_tokens(h, admin_headers):
-    assert (await h.client.get("/api/v1/auth/me")).status_code == 401
-    assert (await h.client.get("/api/v1/auth/me", headers={"Authorization": "Bearer nonsense"})).status_code == 401
+def test_missing_malformed_and_tampered_tokens(client, admin_headers):
+    assert client.get(f"{U}/v1/me/").status_code == 401
+    assert client.get(f"{U}/v1/me/", headers={"Authorization": "Bearer nonsense"}).status_code == 401
     tok = admin_headers["Authorization"].split()[1]
-    assert (await h.client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok[:-3]}abc"})).status_code == 401
+    assert client.get(f"{U}/v1/me/", headers={"Authorization": f"Bearer {tok[:-3]}abc"}).status_code == 401
 
 
-async def test_expired_token_rejected(h, admin_headers):
+def test_expired_token_rejected(client, admin_headers):
     tok = admin_headers["Authorization"].split()[1]
     claims = jwt.decode(tok, options={"verify_signature": False})
     claims["exp"] = int(datetime.now(timezone.utc).timestamp()) - 5
-    expired = jwt.encode(claims, h.settings.secret_key.get_secret_value(), algorithm="HS256")
-    r = await h.client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {expired}"})
-    assert r.status_code == 401 and r.json()["error"]["code"] == "TOKEN_EXPIRED"
+    expired = jwt.encode(claims, settings.SECRET_KEY, algorithm="HS256")
+    r = client.get(f"{U}/v1/me/", headers={"Authorization": f"Bearer {expired}"})
+    assert r.status_code == 401 and r.json()["code"] == "TOKEN_EXPIRED"
 
 
-async def test_logout_revokes_token(h, admin_headers):
-    assert (await h.client.post("/api/v1/auth/logout", headers=admin_headers)).status_code == 200
-    r = await h.client.get("/api/v1/auth/me", headers=admin_headers)
-    assert r.status_code == 401 and r.json()["error"]["code"] == "TOKEN_REVOKED"
+def test_logout_revokes_access_token(client, admin_headers):
+    assert client.post(f"{U}/v1/logout/", headers=admin_headers).status_code == 200
+    r = client.get(f"{U}/v1/me/", headers=admin_headers)
+    assert r.status_code == 401 and r.json()["code"] == "TOKEN_REVOKED"
 
 
-async def test_change_password_invalidates_old_tokens(h, admin_headers):
+def test_refresh_rotation_and_token_type_separation(client):
+    make_user("admin@example.com", "su", superuser=True)
+    body = login(client).json()
+    access, refresh = body["access_token"], body["refresh_token"]
+    # an access token can't refresh; a refresh token can't call the API
+    assert client.post(f"{U}/v1/refresh/", json={"refresh_token": access}).status_code == 401
+    assert client.get(f"{U}/v1/me/", headers={"Authorization": f"Bearer {refresh}"}).status_code == 401
+    r = client.post(f"{U}/v1/refresh/", json={"refresh_token": refresh})
+    assert r.status_code == 200 and r.json()["access_token"] and r.json()["refresh_token"] != refresh
+    assert client.get(f"{U}/v1/me/", headers={"Authorization": f"Bearer {r.json()['access_token']}"}).status_code == 200
+    again = client.post(f"{U}/v1/refresh/", json={"refresh_token": refresh})  # old refresh token: single use
+    assert again.status_code == 401 and again.json()["code"] == "TOKEN_REVOKED"
+
+
+def test_logout_can_revoke_refresh_token_too(client):
+    make_user("admin@example.com", "su", superuser=True)
+    body = login(client).json()
+    h = {"Authorization": f"Bearer {body['access_token']}"}
+    assert client.post(f"{U}/v1/logout/", json={"refresh_token": body["refresh_token"]}, headers=h).status_code == 200
+    assert client.post(f"{U}/v1/refresh/", json={"refresh_token": body["refresh_token"]}).status_code == 401
+
+
+def test_change_password_invalidates_old_tokens(client, admin_headers):
     new = "An0ther-Str0ng-Pass!"
-    bad = await h.client.post("/api/v1/auth/change-password", headers=admin_headers,
-                              json={"current_password": "nope-nope-123", "new_password": new})
-    assert bad.status_code == 401
-    weak = await h.client.post("/api/v1/auth/change-password", headers=admin_headers,
-                               json={"current_password": PASSWORD, "new_password": "short1"})
-    assert weak.status_code == 422
-    ok = await h.client.post("/api/v1/auth/change-password", headers=admin_headers,
-                             json={"current_password": PASSWORD, "new_password": new})
+    assert client.post(f"{U}/v1/change-password/", headers=admin_headers,
+                       json={"current_password": "nope-nope-123", "new_password": new}).status_code == 401
+    assert client.post(f"{U}/v1/change-password/", headers=admin_headers,
+                       json={"current_password": PASSWORD, "new_password": "short1"}).status_code == 422
+    ok = client.post(f"{U}/v1/change-password/", headers=admin_headers,
+                     json={"current_password": PASSWORD, "new_password": new})
     assert ok.status_code == 200
-    assert (await h.client.get("/api/v1/auth/me", headers=admin_headers)).status_code == 401  # old token dead
-    fresh = {"Authorization": f"Bearer {ok.json()['access_token']}"}
-    assert (await h.client.get("/api/v1/auth/me", headers=fresh)).status_code == 200
-    assert (await login(h, "admin", PASSWORD)).status_code == 401
-    assert (await login(h, "admin", new)).status_code == 200
+    assert client.get(f"{U}/v1/me/", headers=admin_headers).status_code == 401  # old token dead
+    assert client.get(f"{U}/v1/me/", headers={"Authorization": f"Bearer {ok.json()['access_token']}"}).status_code == 200
+    assert login(client, password=PASSWORD).status_code == 401 and login(client, password=new).status_code == 200
 
 
-async def test_stored_password_is_argon2id_not_plaintext(h):
-    await make_user(h, "admin", ["ADMIN"])
-    async with h.session_factory() as s:
-        u = await s.scalar(select(User).where(User.username == "admin"))
-    assert u.password_hash.startswith("$argon2id$") and PASSWORD not in u.password_hash
+def test_stored_password_is_argon2id(client):
+    make_user("admin@example.com", "su", superuser=True)
+    with SessionLocal() as db:
+        u = db.scalar(select(User).where(User.email == "admin@example.com"))
+    assert u.hashed_password.startswith("$argon2id$") and PASSWORD not in u.hashed_password
 
 
-async def test_account_lockout_after_repeated_failures(h):
-    await make_user(h, "admin", ["ADMIN"])
-    for _ in range(h.settings.login_max_failed_attempts):
-        assert (await login(h, "admin", "wrong-password-1")).status_code == 401
-    locked = await login(h, "admin", PASSWORD)  # even the right password is refused while locked
-    assert locked.status_code == 429 and locked.json()["error"]["code"] == "ACCOUNT_LOCKED"
-    assert int(locked.headers["retry-after"]) > 0
-    async with h.session_factory() as s:  # simulate lock expiry
-        await s.execute(update(User).where(User.username == "admin").values(locked_until=datetime.now(timezone.utc) - timedelta(seconds=1)))
-        await s.commit()
-    assert (await login(h, "admin", PASSWORD)).status_code == 200
+def test_account_lockout_after_repeated_failures(client):
+    make_user("admin@example.com", "su", superuser=True)
+    for _ in range(settings.LOGIN_MAX_FAILED_ATTEMPTS):
+        assert login(client, password="wrong-password-1").status_code == 401
+    locked = login(client)  # even the right password is refused while locked
+    assert locked.status_code == 429 and locked.json()["code"] == "ACCOUNT_LOCKED" and int(locked.headers["retry-after"]) > 0
+    with SessionLocal() as db:  # simulate expiry of the lock
+        db.execute(update(User).values(locked_until=datetime.now(timezone.utc) - timedelta(seconds=1)))
+        db.commit()
+    assert login(client).status_code == 200
 
 
-async def test_ip_login_throttle():
-    from tests.helpers import running_app
-    async with running_app(login_ip_limit_per_minute=3) as h:
-        codes = [(await login(h, "nobody", "wrong-password-1")).status_code for _ in range(5)]
-        assert codes[:3] == [401, 401, 401] and codes[3:] == [429, 429]
+def test_ip_login_throttle(client, monkeypatch):
+    monkeypatch.setattr(settings, "LOGIN_IP_LIMIT_PER_MINUTE", 3)
+    client.app.state.rate_limiter.reset("login-ip:testclient")
+    codes = [login(client, "nobody@example.com", "wrong-password-1").status_code for _ in range(5)]
+    assert codes[:3] == [401, 401, 401] and codes[3:] == [429, 429]
 
 
-async def test_inactive_user_cannot_login_and_existing_token_dies(h, admin_headers):
-    await make_user(h, "bob", ["VIEWER"])
-    bob = await auth_headers(h, "bob")
-    users = (await h.client.get("/api/v1/users?q=bob", headers=admin_headers)).json()["items"]
-    r = await h.client.post(f"/api/v1/users/{users[0]['id']}/deactivate", headers=admin_headers)
+def test_inactive_user_cannot_login_and_existing_token_dies(client, admin_headers):
+    uid = make_user("bob@example.com", "viewer")
+    bob = login_headers(client, "bob@example.com")
+    r = client.patch(f"{U}/{uid}", json={"is_active": False}, headers=admin_headers)
     assert r.status_code == 200 and r.json()["is_active"] is False
-    assert (await h.client.get("/api/v1/auth/me", headers=bob)).status_code == 401  # effective immediately
-    d = await login(h, "bob")
-    assert d.status_code == 403 and d.json()["error"]["code"] == "ACCOUNT_DISABLED"
-    wrong = await login(h, "bob", "wrong-password-1")
-    assert wrong.status_code == 401  # no account-state leak without the right password
-    await h.client.post(f"/api/v1/users/{users[0]['id']}/activate", headers=admin_headers)
-    assert (await login(h, "bob")).status_code == 200
+    assert client.get(f"{U}/v1/me/", headers=bob).status_code == 401  # effective immediately
+    d = login(client, "bob@example.com")
+    assert d.status_code == 403 and d.json()["code"] == "ACCOUNT_DISABLED"
+    assert login(client, "bob@example.com", "wrong-password-1").status_code == 401  # no state leak without the password
+    client.patch(f"{U}/{uid}", json={"is_active": True}, headers=admin_headers)
+    assert login(client, "bob@example.com").status_code == 200
 
 
-async def test_oauth2_form_token_endpoint_for_swagger(h):
-    await make_user(h, "admin", ["ADMIN"])
-    r = await h.client.post("/api/v1/auth/token", data={"username": "admin", "password": PASSWORD})
+def test_deleted_user_token_dies_and_cannot_login(client, admin_headers):
+    uid = make_user("bob@example.com", "viewer")
+    bob = login_headers(client, "bob@example.com")
+    assert client.delete(f"{U}/{uid}", headers=admin_headers).status_code == 200
+    assert client.get(f"{U}/v1/me/", headers=bob).status_code == 401
+    assert login(client, "bob@example.com").status_code == 401
+    assert client.post(f"{U}/{uid}/restore", headers=admin_headers).status_code == 200
+    assert login(client, "bob@example.com").status_code == 200
+
+
+def test_oauth2_form_token_endpoint_for_swagger(client):
+    make_user("admin@example.com", "su", superuser=True)
+    r = client.post(f"{U}/v1/token/", data={"username": "admin@example.com", "password": PASSWORD})
     assert r.status_code == 200 and r.json()["access_token"]
 
 
-async def test_no_public_registration_endpoint(h):
-    for path in ("/api/v1/auth/register", "/api/v1/auth/signup", "/api/v1/register"):
-        assert (await h.client.post(path, json={"username": "x"})).status_code in (404, 405)
-    assert (await h.client.post("/api/v1/users", json={"username": "evil", "email": "e@e.com", "password": "Passw0rd-Passw0rd"})).status_code == 401
+def test_user_without_role_cannot_log_in(client):
+    make_user("norole@example.com", None)
+    r = login(client, "norole@example.com")
+    assert r.status_code == 403 and r.json()["code"] == "NO_ROLE_ASSIGNED"
+
+
+def test_signup_is_not_public(client, viewer_headers):
+    body = {"email": "evil@example.com", "password": "Passw0rd-Passw0rd", "is_superuser": True}
+    assert client.post(f"{U}/v1/signup/", json=body).status_code == 401           # anonymous
+    assert client.post(f"{U}/v1/signup/", json=body, headers=viewer_headers).status_code == 403  # no create_user
