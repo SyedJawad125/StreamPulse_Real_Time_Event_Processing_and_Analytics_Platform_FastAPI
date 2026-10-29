@@ -59,6 +59,7 @@ class ImageBase(BaseModel):
     name: Optional[str] = Field(None, max_length=30)
     description: Optional[str] = Field(None, max_length=500)
     category_id: Optional[int] = None
+    bulletsdescription: Optional[str] = Field(None, max_length=500)
 
 
 class ImageCreate(ImageBase):
@@ -82,7 +83,10 @@ class ImageOut(ImageBase, TimeUserStampSchema):
     """Full image response with all mixin fields"""
     id: int
     image_path: str
-    
+    original_filename: Optional[str] = None
+    file_size: Optional[int] = None
+    mime_type: Optional[str] = None
+
     class Config:
         from_attributes = True
 
