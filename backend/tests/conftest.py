@@ -1,7 +1,7 @@
 """Test harness.
 
-Safety: tests ONLY run against a database whose name ends in `_test`. Set TEST_DATABASE_URL, or let it be
-derived from DATABASE_URL by appending `_test` to the database name. The dev database is never touched.
+Safety: tests ONLY run against a database whose name ends in `_test`. Set TEST_DATABASE_URL, or let it be derived
+from DATABASE_URL (`streampulse_db` -> `streampulse_test`). The dev database is never touched.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def _derive_test_url() -> str:
         return explicit
     base = os.environ.get("DATABASE_URL") or dotenv_values(ROOT / ".env").get("DATABASE_URL")
     if not base:
-        pytest.exit("Set TEST_DATABASE_URL (e.g. postgresql+asyncpg://streampulse_app:PASSWORD@localhost:5432/streampulse_test)", 2)
+        pytest.exit("Set TEST_DATABASE_URL (e.g. postgresql+psycopg2://streampulse_app:PASSWORD@localhost:5432/streampulse_test)", 2)
     head, _, name = base.rpartition("/")
     name = name.split("?")[0]
     if name.endswith("_test"):
@@ -40,71 +40,83 @@ os.environ.update({
     "APP_ENV": "testing",
     "SECRET_KEY": "test-secret-key-test-secret-key-0123456789",
     "API_KEY_PEPPER": "test-pepper-test-pepper-test-pepper-0123456789",
-    "LOG_JSON": "false",
-    "LOG_LEVEL": "ERROR",
-    "CORS_ORIGINS": "",
+    "LOG_JSON": "false", "LOG_LEVEL": "ERROR", "CORS_ORIGINS": "",
+    # fast retry/sweep timings so pipeline tests finish quickly
+    "EVENT_QUEUE_MAXSIZE": "100", "EVENT_WORKER_CONCURRENCY": "2", "EVENT_MAX_RETRIES": "2",
+    "EVENT_RETRY_BASE_DELAY_SECONDS": "0.05", "EVENT_RETRY_MAX_DELAY_SECONDS": "0.2",
+    "EVENT_SWEEP_INTERVAL_SECONDS": "0.1", "EVENT_SHUTDOWN_GRACE_SECONDS": "1.0",
+    "LOGIN_IP_LIMIT_PER_MINUTE": "10000", "SSE_HEARTBEAT_SECONDS": "0.2",
 })
 
-from sqlalchemy import text  # noqa: E402
-from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine, text  # noqa: E402
 from sqlalchemy.pool import NullPool  # noqa: E402
 
-from tests.helpers import Harness, auth_headers, make_user, running_app  # noqa: E402
+from app.main import app  # noqa: E402
+from tests.helpers import login_headers, make_user  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
 def migrated_database() -> None:
     """Build the schema with the real Alembic migrations (this exercises them on every run)."""
-    result = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=ROOT,
-                            env=os.environ.copy(), capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=ROOT, env=os.environ.copy(),
+                            capture_output=True, text=True)
     assert result.returncode == 0, f"alembic upgrade failed:\n{result.stderr}"
 
 
 @pytest.fixture(autouse=True)
-async def clean_database(migrated_database):
-    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
-    async with engine.begin() as conn:
-        names = (await conn.execute(text(
-            "SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename <> 'alembic_version'"))).scalars().all()
+def clean_database(migrated_database):
+    engine = create_engine(TEST_DATABASE_URL, poolclass=NullPool)
+    with engine.begin() as conn:
+        names = conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname='public' "
+                                  "AND tablename <> 'alembic_version'")).scalars().all()
         if names:
-            await conn.execute(text("TRUNCATE " + ", ".join(f'"{n}"' for n in names) + " RESTART IDENTITY CASCADE"))
-    await engine.dispose()
+            conn.execute(text("TRUNCATE " + ", ".join(f'"{n}"' for n in names) + " RESTART IDENTITY CASCADE"))
+    engine.dispose()
     yield
 
 
 @pytest.fixture
-async def h():
-    async with running_app() as harness:
-        yield harness
+def client():
+    """App with its lifespan running: RBAC seeded, event workers started."""
+    from app.rate_limit import SlidingWindowRateLimiter
+    app.state.rate_limiter = SlidingWindowRateLimiter(60.0)  # DB ids restart each test; don't leak limiter state
+    with TestClient(app) as c:
+        yield c
 
 
 @pytest.fixture
-async def admin_headers(h: Harness):
-    await make_user(h, "admin", ["ADMIN"])
-    return await auth_headers(h, "admin")
+def manager(client):
+    return client.app.state.worker_manager
 
 
 @pytest.fixture
-async def operator_headers(h: Harness):
-    await make_user(h, "operator1", ["OPERATOR"])
-    return await auth_headers(h, "operator1")
+def admin_headers(client):
+    make_user("admin@example.com", "su", superuser=True)
+    return login_headers(client, "admin@example.com")
 
 
 @pytest.fixture
-async def analyst_headers(h: Harness):
-    await make_user(h, "analyst1", ["ANALYST"])
-    return await auth_headers(h, "analyst1")
+def operator_headers(client):
+    make_user("operator@example.com", "operator")
+    return login_headers(client, "operator@example.com")
 
 
 @pytest.fixture
-async def viewer_headers(h: Harness):
-    await make_user(h, "viewer1", ["VIEWER"])
-    return await auth_headers(h, "viewer1")
+def analyst_headers(client):
+    make_user("analyst@example.com", "analyst")
+    return login_headers(client, "analyst@example.com")
 
 
 @pytest.fixture
-async def api_key(h: Harness, admin_headers):
-    r = await h.client.post("/api/v1/api-keys", json={"name": "test-key"}, headers=admin_headers)
+def viewer_headers(client):
+    make_user("viewer@example.com", "viewer")
+    return login_headers(client, "viewer@example.com")
+
+
+@pytest.fixture
+def api_key(client, admin_headers):
+    r = client.post("/api/api-keys/v1/api-key/", json={"name": "test-key"}, headers=admin_headers)
     assert r.status_code == 201, r.text
     return r.json()["key"]
 
