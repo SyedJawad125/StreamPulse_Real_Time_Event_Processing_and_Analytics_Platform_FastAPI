@@ -1,56 +1,62 @@
 import time
+import uuid
 
 import jwt
 import pytest
+from pydantic import ValidationError
 
-from app.core import security
-from app.core.exceptions import UnauthorizedError
-from app.core.rate_limit import SlidingWindowRateLimiter
-from app.services.audit_service import sanitize
-from app.services.processing_service import sanitize_error
-from tests.helpers import make_settings
-
-import uuid
+from app import oauth2, utils
+from app.config import Settings, settings
+from app.crud.audit import sanitize
+from app.crud.processing import sanitize_error
+from app.exceptions import AppError
+from app.rate_limit import SlidingWindowRateLimiter
 
 
 def test_password_hash_is_argon2id_and_verifies():
-    h = security.hash_password("Correct-Horse-9")
+    h = utils.get_password_hash("Correct-Horse-9")
     assert h.startswith("$argon2id$")
-    assert security.verify_password(h, "Correct-Horse-9")
-    assert not security.verify_password(h, "wrong")
-    assert not security.verify_password("not-a-hash", "x")
-    assert security.hash_password("Correct-Horse-9") != h  # salted
+    assert utils.verify_password("Correct-Horse-9", h)
+    assert not utils.verify_password("wrong", h)
+    assert not utils.verify_password("x", None)            # unknown user: always False (dummy hash burns equal time)
+    assert not utils.verify_password("x", "not-a-hash")
+    assert utils.get_password_hash("Correct-Horse-9") != h  # salted
 
 
-def test_jwt_roundtrip_tamper_and_expiry():
-    s = make_settings()
-    uid = uuid.uuid4()
-    token, jti, _ = security.create_access_token(uid, 0, s)
-    claims = security.decode_access_token(token, s)
-    assert claims["sub"] == str(uid) and claims["jti"] == jti
-    with pytest.raises(UnauthorizedError):
-        security.decode_access_token(token[:-2] + "xx", s)
-    expired = jwt.encode({"sub": "x", "jti": "j", "iat": 1, "exp": int(time.time()) - 10, "iss": "streampulse"},
-                         s.secret_key.get_secret_value(), algorithm="HS256")
-    with pytest.raises(UnauthorizedError) as e:
-        security.decode_access_token(expired, s)
+def test_password_strength_rules():
+    with pytest.raises(ValueError):
+        utils.validate_password_strength("short1")
+    with pytest.raises(ValueError):
+        utils.validate_password_strength("onlyletterspassword")
+    assert utils.validate_password_strength("GoodPassw0rd")
+
+
+def test_jwt_roundtrip_tamper_expiry_and_type():
+    token = oauth2.create_access_token({"user_id": 7, "ver": 0})
+    claims = oauth2.decode_token(token, "access")
+    assert claims["user_id"] == 7 and claims["type"] == "access" and claims["jti"]
+    with pytest.raises(AppError) as e:
+        oauth2.decode_token(token, "refresh")                 # an access token is not a refresh token
+    assert e.value.code == "INVALID_TOKEN_TYPE"
+    with pytest.raises(AppError):
+        oauth2.decode_token(token[:-2] + "xx", "access")
+    expired = jwt.encode({"user_id": 1, "type": "access", "jti": "j", "iat": 1, "exp": int(time.time()) - 10,
+                          "iss": settings.JWT_ISSUER}, settings.SECRET_KEY, algorithm="HS256")
+    with pytest.raises(AppError) as e:
+        oauth2.decode_token(expired, "access")
     assert e.value.code == "TOKEN_EXPIRED"
-    none_alg = jwt.encode({"sub": "x"}, key=None, algorithm="none")
-    with pytest.raises(UnauthorizedError):
-        security.decode_access_token(none_alg, s)  # alg=none rejected
+    with pytest.raises(AppError):
+        oauth2.decode_token(jwt.encode({"user_id": 1}, key=None, algorithm="none"), "access")  # alg=none rejected
 
 
 def test_api_key_generation_and_hashing():
-    s = make_settings()
-    key, prefix = security.generate_api_key()
-    assert key.startswith(f"sp_{prefix}_") and len(key) > 40
-    assert security.parse_api_key_prefix(key) == prefix
-    assert security.parse_api_key_prefix("garbage") is None
-    stored = security.hash_api_key(key, s)
+    key, prefix = utils.generate_api_key()
+    assert key.startswith(f"sp_{prefix}_") and len(key) > 40 and utils.parse_api_key_prefix(key) == prefix
+    assert utils.parse_api_key_prefix("garbage") is None
+    stored = utils.hash_api_key(key)
     assert key not in stored and len(stored) == 64
-    assert security.verify_api_key(key, stored, s)
-    assert not security.verify_api_key(key + "x", stored, s)
-    assert security.generate_api_key()[0] != key
+    assert utils.verify_api_key(key, stored) and not utils.verify_api_key(key + "x", stored)
+    assert utils.generate_api_key()[0] != key
 
 
 def test_rate_limiter_sliding_window():
@@ -59,30 +65,43 @@ def test_rate_limiter_sliding_window():
     assert all(rl.check("k", 3).allowed for _ in range(3))
     r = rl.check("k", 3)
     assert not r.allowed and r.retry_after >= 1
-    assert rl.check("other", 3).allowed  # keys are independent
+    assert rl.check("other", 3).allowed
     now[0] = 61
-    assert rl.check("k", 3).allowed  # window slid
+    assert rl.check("k", 3).allowed
     assert rl.cleanup() >= 0
+
+
+def test_rate_limiter_is_thread_safe():
+    from concurrent.futures import ThreadPoolExecutor
+    rl = SlidingWindowRateLimiter(60)
+    with ThreadPoolExecutor(16) as pool:
+        results = list(pool.map(lambda _: rl.check("k", 50).allowed, range(400)))
+    assert sum(results) == 50  # exactly the limit, never more, under concurrency
 
 
 def test_sanitizers_strip_secrets():
     assert sanitize({"password": "x", "nested": {"api_key": "y", "ok": 1}, "Authorization": "Bearer z"}) == {
         "password": "[REDACTED]", "nested": {"api_key": "[REDACTED]", "ok": 1}, "Authorization": "[REDACTED]"}
-    msg = sanitize_error("fail Bearer abc.def.ghi token=hunter2 postgresql+asyncpg://u:p@h/db sp_0123abcd_" + "A" * 30)
+    msg = sanitize_error("fail Bearer abc.def.ghi token=hunter2 postgresql+psycopg2://u:p@h/db sp_0123abcd_" + "A" * 30)
     for secret in ("abc.def.ghi", "hunter2", "u:p@h", "A" * 30):
         assert secret not in msg
-    assert len(sanitize_error("x" * 5000)) == 500
-    assert "\n" not in sanitize_error("a\nb\nc")
+    assert len(sanitize_error("x" * 5000)) == 500 and "\n" not in sanitize_error("a\nb\nc")
 
 
-def test_settings_reject_short_and_placeholder_secrets():
-    from pydantic import ValidationError
-    from tests.helpers import make_settings
+def test_settings_reject_bad_values():
+    base = dict(_env_file=None)
     with pytest.raises(ValidationError, match="at least 32"):
-        make_settings(secret_key="too-short")
+        Settings(**base, SECRET_KEY="too-short")
     with pytest.raises(ValidationError, match="placeholder"):
-        make_settings(app_env="production", secret_key="change_me_" + "x" * 30)
-    with pytest.raises(ValidationError, match="postgresql\\+asyncpg"):
-        make_settings(database_url="postgresql://u:p@localhost/db")
-    ok = make_settings(app_env="production", secret_key="a-real-looking-secret-" + "k" * 20)
-    assert ok.is_production
+        Settings(**base, APP_ENV="production", SECRET_KEY="change_me_" + "x" * 30)
+    with pytest.raises(ValidationError, match="synchronous"):
+        Settings(**base, DATABASE_URL="postgresql+asyncpg://u:p@localhost/db")
+    ok = Settings(**base, DATABASE_URL="postgresql://u:p@localhost/db", APP_ENV="production",
+                  SECRET_KEY="a-real-looking-secret-" + "k" * 20)
+    assert ok.IS_PRODUCTION and ok.DATABASE_URL.startswith("postgresql+psycopg2://")
+
+
+def test_filter_helpers_escape_wildcards(client, admin_headers):
+    # a literal "%" in a search term must not behave like a wildcard
+    r = client.get("/api/roles/v1/role/", params={"name": "%"}, headers=admin_headers)
+    assert r.status_code == 200 and r.json()["result"]["count"] == 0
