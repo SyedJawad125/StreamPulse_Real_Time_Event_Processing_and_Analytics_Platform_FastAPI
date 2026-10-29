@@ -1,49 +1,68 @@
-import re
-import uuid
-from datetime import datetime
+# app/schemas/role.py
+from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas.base import TimeUserStampSchema
 
 
-class PermissionOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: uuid.UUID
+class PermissionInRole(BaseModel):
+    id: int
     name: str
-    code_name: str
-    module_name: str
-    description: str | None = None
-
-
-class RoleOut(BaseModel):
+    description: str
+    code: str
+    module_name: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
-    id: uuid.UUID
-    name: str
-    code_name: str
-    description: str | None = None
-    is_system: bool
-    permissions: list[PermissionOut] = []
-    created_at: datetime
-    updated_at: datetime
 
 
-class RoleCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=100)
-    code_name: str = Field(min_length=2, max_length=50)
-    description: str | None = Field(default=None, max_length=255)
+class RoleBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    description: str = Field(..., min_length=1)
+    code: Optional[str] = Field(None, max_length=50)
 
-    @field_validator("code_name")
-    @classmethod
-    def _code(cls, v: str) -> str:
-        v = v.strip().upper()
-        if not re.match(r"^[A-Z][A-Z0-9_]{1,49}$", v):
-            raise ValueError("code_name must be UPPER_SNAKE_CASE")
-        return v
+
+class RoleCreate(RoleBase):
+    permission_ids: Optional[List[int]] = []
+    model_config = ConfigDict(extra="forbid")
 
 
 class RoleUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=2, max_length=100)
-    description: str | None = Field(default=None, max_length=255)
+    name: Optional[str] = Field(None, min_length=1, max_length=50)
+    description: Optional[str] = Field(None, min_length=1)
+    code: Optional[str] = Field(None, max_length=50)
+    permission_ids: Optional[List[int]] = None
+    model_config = ConfigDict(extra="forbid")
 
 
-class RolePermissionsUpdate(BaseModel):
-    permission_codes: list[str] = Field(max_length=100)
+class RoleOut(RoleBase, TimeUserStampSchema):
+    id: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RoleWithPermissions(RoleOut):
+    permissions: List[PermissionInRole] = []
+
+
+class RoleWithStats(RoleOut):
+    user_count: int = 0
+    permission_count: int = 0
+
+
+class PaginatedRoles(BaseModel):
+    count: int
+    data: List[RoleOut]
+
+
+class PaginatedRolesWithPermissions(BaseModel):
+    count: int
+    data: List[RoleWithPermissions]
+
+
+class RoleListResponse(BaseModel):
+    status: str
+    result: PaginatedRoles
+
+
+class RoleListWithPermissionsResponse(BaseModel):
+    status: str
+    result: PaginatedRolesWithPermissions
