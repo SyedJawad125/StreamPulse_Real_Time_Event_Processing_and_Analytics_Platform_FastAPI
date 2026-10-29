@@ -60,6 +60,8 @@ class EmployeeBase(BaseModel):
     hire_date: date
     job_title: str = Field(..., min_length=1, max_length=100)
     salary: float = Field(..., gt=0)
+    department_id: Optional[int] = None
+    rank_id: Optional[int] = None
 
 
 class EmployeeCreate(EmployeeBase):
@@ -78,7 +80,9 @@ class EmployeeUpdate(BaseModel):
     job_title: Optional[str] = Field(None, min_length=1, max_length=100)
     salary: Optional[float] = Field(None, gt=0)
     user_id: Optional[int] = None  # ✅ Added
-    
+    department_id: Optional[int] = None
+    rank_id: Optional[int] = None
+
     class Config:
         extra = "forbid"
 
