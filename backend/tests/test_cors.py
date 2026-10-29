@@ -1,19 +1,22 @@
-from tests.helpers import running_app
+from fastapi.testclient import TestClient
+
+from app.config import settings
+from app.main import create_app
 
 
-async def test_cors_preflight_for_configured_frontend_origin():
-    async with running_app(cors_origins="http://localhost:3000") as h:
-        r = await h.client.options("/api/v1/auth/login", headers={
+def test_cors_preflight_for_configured_frontend_origin(monkeypatch):
+    monkeypatch.setattr(settings, "CORS_ORIGINS", "http://localhost:3000")
+    with TestClient(create_app()) as c:
+        r = c.options("/api/user/v1/login/", headers={
             "Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST",
             "Access-Control-Request-Headers": "authorization,content-type"})
         assert r.status_code == 200 and r.headers["access-control-allow-origin"] == "http://localhost:3000"
-        ok = await h.client.get("/health/live", headers={"Origin": "http://localhost:3000"})
+        ok = c.get("/health/live", headers={"Origin": "http://localhost:3000"})
         assert ok.headers["access-control-allow-origin"] == "http://localhost:3000"
         assert "x-request-id" in ok.headers["access-control-expose-headers"].lower()
-        evil = await h.client.get("/health/live", headers={"Origin": "http://evil.example"})
-        assert "access-control-allow-origin" not in evil.headers
+        assert "access-control-allow-origin" not in c.get("/health/live", headers={"Origin": "http://evil.example"}).headers
 
 
-async def test_no_cors_headers_when_no_origins_configured(h):
-    r = await h.client.get("/health/live", headers={"Origin": "http://localhost:3000"})
+def test_no_cors_headers_when_no_origins_configured(client):
+    r = client.get("/health/live", headers={"Origin": "http://localhost:3000"})
     assert "access-control-allow-origin" not in r.headers
