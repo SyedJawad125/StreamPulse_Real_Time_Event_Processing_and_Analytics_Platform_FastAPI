@@ -69,9 +69,9 @@ async def main(a: argparse.Namespace) -> None:
                     t0 = time.perf_counter()
                     try:
                         if len(chunk) == 1 and a.batch_size == 1:
-                            r = await client.post("/api/v1/events", json=chunk[0])
+                            r = await client.post("/api/events/v1/event/", json=chunk[0])
                         else:
-                            r = await client.post("/api/v1/events/batch", json={"events": chunk})
+                            r = await client.post("/api/events/v1/event/batch/", json={"events": chunk})
                     except httpx.TransportError:  # e.g. a keep-alive connection the server already closed
                         totals["transport_errors"] += 1
                         await asyncio.sleep(0.2)
@@ -106,22 +106,22 @@ async def main(a: argparse.Namespace) -> None:
               f"p95 {pct(latencies, 95):.1f}  p99 {pct(latencies, 99):.1f}  max {max(latencies):.1f}")
 
         if a.username and a.password:
-            r = await client.post("/api/v1/auth/login", json={"username": a.username, "password": a.password}, headers={})
+            r = await client.post("/api/user/v1/login/", json={"email": a.username, "password": a.password}, headers={})
             r.raise_for_status()
             auth = {"Authorization": f"Bearer {r.json()['access_token']}"}
             unique_expected = totals["accepted"]
             t_proc = time.perf_counter()
             peak_util = 0.0
             while time.perf_counter() - t_proc < a.drain_timeout:
-                q = (await client.get("/api/v1/analytics/queue-status", headers=auth)).json()
+                q = (await client.get("/api/analytics/v1/queue-status/", headers=auth)).json()
                 peak_util = max(peak_util, q["utilization"])
                 done = q["db_counts"]["PROCESSED"] + q["db_counts"]["DEAD_LETTER"]
                 if done >= unique_expected and q["queue_size"] == 0:
                     break
                 await asyncio.sleep(0.25)
             drain = time.perf_counter() - t_proc
-            ov = (await client.get("/api/v1/analytics/overview", headers=auth, params={"from": datetime.fromtimestamp(time.time() - elapsed - drain - 60, timezone.utc).isoformat()})).json()
-            lat = (await client.get("/api/v1/analytics/processing-latency", headers=auth)).json()["overall"]
+            ov = (await client.get("/api/analytics/v1/overview/", headers=auth, params={"from": datetime.fromtimestamp(time.time() - elapsed - drain - 60, timezone.utc).isoformat()})).json()
+            lat = (await client.get("/api/analytics/v1/processing-latency/", headers=auth)).json()["overall"]
             print("\n=== Processing ===")
             print(f"drain time after ingest : {drain:.2f}s  (total pipeline {(elapsed + drain):.2f}s -> "
                   f"{unique_expected / (elapsed + drain):.1f} events/s end-to-end)")
@@ -140,6 +140,6 @@ if __name__ == "__main__":
     p.add_argument("--duplicate-ratio", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--max-retries", type=int, default=5, help="retries on 429/503")
-    p.add_argument("--username"); p.add_argument("--password")
+    p.add_argument("--username", help="admin e-mail (enables processing-throughput measurement)"); p.add_argument("--password")
     p.add_argument("--drain-timeout", type=float, default=120)
     asyncio.run(main(p.parse_args()))
