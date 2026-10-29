@@ -1,69 +1,71 @@
-import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
-from app.models.event import Event
-from tests.helpers import make_event, running_app, wait_status
+from app.config import settings
+from app.database import SessionLocal
+from app.main import create_app
+from app.models import Event
+from tests.helpers import AN, EV, EVB, K, login_headers, make_event, make_user, wait_status
 
-API = "/api/v1"
 
-
-async def count_events(h, **where) -> int:
-    async with h.session_factory() as s:
-        stmt = select(func.count(Event.id))
+def count_events(**where) -> int:
+    with SessionLocal() as db:
+        q = select(func.count(Event.id))
         for k, v in where.items():
-            stmt = stmt.where(getattr(Event, k) == v)
-        return await s.scalar(stmt)
+            q = q.where(getattr(Event, k) == v)
+        return db.scalar(q)
 
 
-async def test_single_event_accepted_not_reported_as_processed(h, key_headers, admin_headers):
+def test_single_event_accepted_not_reported_as_processed(client, key_headers, admin_headers):
     body = make_event(event_id="order-1001")
-    r = await h.client.post(f"{API}/events", json=body, headers=key_headers)
+    r = client.post(EV, json=body, headers=key_headers)
     assert r.status_code == 202
     data = r.json()
-    assert data["status"] == "accepted" and data["event_id"] == "order-1001"
+    assert data["status"] == "accepted" and data["event_id"] == "order-1001" and isinstance(data["id"], int)
     assert data["processing_status"] in ("RECEIVED", "QUEUED")  # never PROCESSED at accept time
-    done = await wait_status(h, admin_headers, data["id"], {"PROCESSED"})
+    done = wait_status(client, admin_headers, data["id"], {"PROCESSED"})
     assert done["processing_duration_ms"] is not None and done["completed_at"] and done["retry_count"] == 0
     assert done["payload"]["order_id"] == body["payload"]["order_id"]
 
 
-async def test_duplicate_event_is_detected_and_counted(h, key_headers, admin_headers):
+def test_duplicate_event_is_detected_and_counted(client, key_headers, admin_headers):
     body = make_event(event_id="dup-1")
-    first = await h.client.post(f"{API}/events", json=body, headers=key_headers)
-    second = await h.client.post(f"{API}/events", json=body, headers=key_headers)
-    third = await h.client.post(f"{API}/events", json=body, headers=key_headers)
-    assert (first.status_code, second.status_code, third.status_code) == (202, 200, 200)
-    assert second.json()["status"] == "duplicate" and second.json()["id"] == first.json()["id"]
-    assert await count_events(h) == 1
-    ev = (await h.client.get(f"{API}/events?event_id=dup-1", headers=admin_headers)).json()["items"][0]
+    codes = [client.post(EV, json=body, headers=key_headers) for _ in range(3)]
+    assert [c.status_code for c in codes] == [202, 200, 200]
+    assert codes[1].json()["status"] == "duplicate" and codes[1].json()["id"] == codes[0].json()["id"]
+    assert count_events() == 1
+    ev = client.get(EV, params={"event_id": "dup-1"}, headers=admin_headers).json()["result"]["data"][0]
     assert ev["duplicate_count"] == 2
-    ov = (await h.client.get(f"{API}/analytics/overview", headers=admin_headers)).json()
+    ov = client.get(f"{AN}/overview/", headers=admin_headers).json()
     assert ov["duplicate_submissions"] == 2 and ov["total_received"] == 1
 
 
-async def test_concurrent_duplicate_submissions_create_exactly_one_row(h, key_headers):
+def test_concurrent_duplicate_submissions_create_exactly_one_row(client, key_headers):
     body = make_event(event_id="race-1")
-    rs = await asyncio.gather(*[h.client.post(f"{API}/events", json=body, headers=key_headers) for _ in range(25)])
+    with ThreadPoolExecutor(16) as pool:
+        rs = list(pool.map(lambda _: client.post(EV, json=body, headers=key_headers), range(25)))
     codes = sorted(r.status_code for r in rs)
     assert codes.count(202) == 1 and codes.count(200) == 24
     assert len({r.json()["id"] for r in rs}) == 1
-    assert await count_events(h, event_id="race-1") == 1
+    assert count_events(event_id="race-1") == 1
 
 
-async def test_concurrent_overlapping_batches(h, key_headers):
+def test_concurrent_overlapping_batches_do_not_deadlock(client, key_headers):
     ids = [f"ov-{i}" for i in range(10)]
-    batch = {"events": [make_event(event_id=i) for i in ids]}
-    rs = await asyncio.gather(*[h.client.post(f"{API}/events/batch", json=batch, headers=key_headers) for _ in range(6)])
-    assert all(r.status_code == 202 for r in rs)
+    batches = [{"events": [make_event(event_id=i) for i in (ids if n % 2 == 0 else list(reversed(ids)))]} for n in range(8)]
+    with ThreadPoolExecutor(8) as pool:
+        rs = list(pool.map(lambda b: client.post(EVB, json=b, headers=key_headers), batches))
+    assert all(r.status_code == 202 for r in rs), [r.text for r in rs if r.status_code != 202]
     assert sum(r.json()["accepted"] for r in rs) == 10  # each id accepted exactly once across all requests
-    assert sum(r.json()["duplicates"] for r in rs) == 50
-    assert await count_events(h) == 10
+    assert sum(r.json()["duplicates"] for r in rs) == 70
+    assert count_events() == 10
 
 
-async def test_batch_reports_accepted_rejected_duplicates(h, key_headers):
-    await h.client.post(f"{API}/events", json=make_event(event_id="pre-existing"), headers=key_headers)
+def test_batch_reports_accepted_rejected_duplicates(client, key_headers):
+    client.post(EV, json=make_event(event_id="pre-existing"), headers=key_headers)
     batch = {"events": [
         make_event(event_id="b-1"),
         make_event(event_id="b-2", event_type="order.created", payload={"order_id": "x"}),  # missing amount/currency
@@ -74,62 +76,53 @@ async def test_batch_reports_accepted_rejected_duplicates(h, key_headers):
         make_event(event_id="b-3", schema_version="7.0"),
         make_event(event_id="b-4", event_type="custom.thing", payload={"anything": [1, 2, 3]}),
     ]}
-    r = await h.client.post(f"{API}/events/batch", json=batch, headers=key_headers)
+    r = client.post(EVB, json=batch, headers=key_headers)
     assert r.status_code == 202
-    data = r.json()
-    assert (data["accepted"], data["duplicates"], data["rejected"]) == (2, 2, 4)
-    by_index = {x["index"]: x for x in data["results"]}
-    assert [by_index[i]["status"] for i in range(8)] == [
+    d = r.json()
+    assert (d["accepted"], d["duplicates"], d["rejected"]) == (2, 2, 4)
+    by = {x["index"]: x for x in d["results"]}
+    assert [by[i]["status"] for i in range(8)] == [
         "accepted", "rejected", "duplicate", "duplicate", "rejected", "rejected", "rejected", "accepted"]
-    assert by_index[1]["code"] == "invalid_payload" and by_index[6]["code"] == "unsupported_schema_version"
-    assert by_index[3]["code"] == "duplicate_in_batch" and by_index[0]["id"]
-    assert await count_events(h) == 3  # pre-existing, b-1, b-4
+    assert by[1]["code"] == "invalid_payload" and by[6]["code"] == "unsupported_schema_version"
+    assert by[3]["code"] == "duplicate_in_batch" and by[0]["id"]
+    assert count_events() == 3
 
 
-async def test_batch_limits_and_shape(h, key_headers):
-    r = await h.client.post(f"{API}/events/batch", json={"events": []}, headers=key_headers)
-    assert r.status_code == 422
-    assert (await h.client.post(f"{API}/events/batch", json={"nope": 1}, headers=key_headers)).status_code == 422
+def test_batch_shape_and_limits(client, key_headers, monkeypatch):
+    assert client.post(EVB, json={"events": []}, headers=key_headers).status_code == 422
+    assert client.post(EVB, json={"nope": 1}, headers=key_headers).status_code == 422
+    monkeypatch.setattr(settings, "MAX_BATCH_SIZE", 3)
+    r = client.post(EVB, json={"events": [make_event() for _ in range(4)]}, headers=key_headers)
+    assert r.status_code == 413 and r.json()["code"] == "BATCH_TOO_LARGE"
+    ok = client.post(EVB, json={"events": [make_event() for _ in range(3)]}, headers=key_headers)
+    assert ok.status_code == 202 and ok.json()["accepted"] == 3
 
 
-async def test_batch_too_large_is_413():
-    async with running_app(max_batch_size=3) as h:
-        from tests.helpers import make_user, auth_headers
-        await make_user(h, "admin", ["ADMIN"])
-        ah = await auth_headers(h, "admin")
-        k = (await h.client.post(f"{API}/api-keys", json={"name": "k"}, headers=ah)).json()["key"]
-        r = await h.client.post(f"{API}/events/batch", json={"events": [make_event() for _ in range(4)]}, headers={"X-API-Key": k})
-        assert r.status_code == 413 and r.json()["error"]["code"] == "BATCH_TOO_LARGE"
-        ok = await h.client.post(f"{API}/events/batch", json={"events": [make_event() for _ in range(3)]}, headers={"X-API-Key": k})
-        assert ok.status_code == 202 and ok.json()["accepted"] == 3
-
-
-async def test_request_body_size_limit_413():
-    async with running_app(max_request_body_bytes=2000) as h:
-        from tests.helpers import make_user, auth_headers
-        await make_user(h, "admin", ["ADMIN"])
-        ah = await auth_headers(h, "admin")
-        k = (await h.client.post(f"{API}/api-keys", json={"name": "k"}, headers=ah)).json()["key"]
+def test_request_body_size_limit_413(api_key, monkeypatch):
+    monkeypatch.setattr(settings, "MAX_REQUEST_BODY_BYTES", 2000)
+    with TestClient(create_app()) as c:  # the middleware captures the limit when the app is created
+        k = {"X-API-Key": api_key}
         big = make_event(payload={"blob": "x" * 5000, "order_id": "1", "amount": 1, "currency": "USD"})
-        r = await h.client.post(f"{API}/events", json=big, headers={"X-API-Key": k})
-        assert r.status_code == 413 and r.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
+        r = c.post(EV, json=big, headers=k)
+        assert r.status_code == 413 and r.json()["code"] == "PAYLOAD_TOO_LARGE"
 
-        async def chunked():  # no Content-Length: enforced on streamed bytes
+        def chunked():  # no Content-Length: enforced on the streamed bytes
             for _ in range(10):
                 yield b'{"x":"' + b"a" * 500 + b'"}'
 
-        r2 = await h.client.post(f"{API}/events", content=chunked(), headers={"X-API-Key": k, "content-type": "application/json"})
+        r2 = c.post(EV, content=chunked(), headers={**k, "content-type": "application/json"})
         assert r2.status_code == 413
+        assert c.post(EV, json=make_event(), headers=k).status_code == 202  # normal requests still fine
 
 
-async def test_event_payload_too_large_413(h, key_headers):
-    big = make_event(event_type="custom.big", payload={"blob": "x" * (h.settings.max_payload_bytes + 10)})
-    r = await h.client.post(f"{API}/events", json=big, headers=key_headers)
-    assert r.status_code == 413 and r.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
-    assert await count_events(h) == 0
+def test_event_payload_too_large_413(client, key_headers):
+    big = make_event(event_type="custom.big", payload={"blob": "x" * (settings.MAX_PAYLOAD_BYTES + 10)})
+    r = client.post(EV, json=big, headers=key_headers)
+    assert r.status_code == 413 and r.json()["code"] == "PAYLOAD_TOO_LARGE"
+    assert count_events() == 0
 
 
-async def test_invalid_events_never_reach_the_worker(h, key_headers):
+def test_invalid_events_never_reach_the_worker(client, key_headers):
     base = make_event()
     cases = {
         "missing field": {k: v for k, v in base.items() if k != "event_type"},
@@ -142,30 +135,25 @@ async def test_invalid_events_never_reach_the_worker(h, key_headers):
         "payload not object": {**base, "payload": [1, 2]},
     }
     for name, body in cases.items():
-        r = await h.client.post(f"{API}/events", json=body, headers=key_headers)
-        assert r.status_code == 422, (name, r.text)
-    assert await count_events(h) == 0
+        assert client.post(EV, json=body, headers=key_headers).status_code == 422, name
+    assert count_events() == 0
 
 
-async def test_timestamp_rules(h, key_headers):
+def test_timestamp_rules(client, key_headers):
     future = make_event(timestamp=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
-    r = await h.client.post(f"{API}/events", json=future, headers=key_headers)
-    assert r.status_code == 422 and r.json()["error"]["code"] == "INVALID_TIMESTAMP"
-    old = make_event(timestamp=(datetime.now(timezone.utc) - timedelta(days=800)).isoformat())
-    assert (await h.client.post(f"{API}/events", json=old, headers=key_headers)).status_code == 422
-    ok = make_event(timestamp=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat())  # small clock skew ok
-    assert (await h.client.post(f"{API}/events", json=ok, headers=key_headers)).status_code == 202
-    tz = make_event(timestamp="2026-10-01T12:00:00+05:00")
-    assert (await h.client.post(f"{API}/events", json=tz, headers=key_headers)).status_code == 202
+    r = client.post(EV, json=future, headers=key_headers)
+    assert r.status_code == 422 and r.json()["code"] == "INVALID_TIMESTAMP"
+    assert client.post(EV, json=make_event(timestamp=(datetime.now(timezone.utc) - timedelta(days=800)).isoformat()), headers=key_headers).status_code == 422
+    assert client.post(EV, json=make_event(timestamp=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()), headers=key_headers).status_code == 202
+    assert client.post(EV, json=make_event(timestamp="2026-10-01T12:00:00+05:00"), headers=key_headers).status_code == 202
 
 
-async def test_unsupported_schema_version(h, key_headers):
-    r = await h.client.post(f"{API}/events", json=make_event(schema_version="2.0"), headers=key_headers)
-    assert r.status_code == 422 and r.json()["error"]["code"] == "UNSUPPORTED_SCHEMA_VERSION"
-    assert "1.0" in r.json()["error"]["message"]
+def test_unsupported_schema_version(client, key_headers):
+    r = client.post(EV, json=make_event(schema_version="2.0"), headers=key_headers)
+    assert r.status_code == 422 and r.json()["code"] == "UNSUPPORTED_SCHEMA_VERSION" and "1.0" in r.json()["detail"]
 
 
-async def test_event_specific_payload_requirements(h, key_headers):
+def test_event_specific_payload_requirements(client, key_headers):
     bad = [
         make_event(event_type="order.created", payload={"order_id": "1", "amount": -5, "currency": "USD"}),
         make_event(event_type="order.created", payload={"order_id": "1", "amount": "ten", "currency": "USD"}),
@@ -175,72 +163,59 @@ async def test_event_specific_payload_requirements(h, key_headers):
         make_event(event_type="service.health", payload={"service": "db", "status": "sleepy"}),
     ]
     for body in bad:
-        r = await h.client.post(f"{API}/events", json=body, headers=key_headers)
-        assert r.status_code == 422 and r.json()["error"]["code"] == "INVALID_PAYLOAD", (body, r.text)
+        r = client.post(EV, json=body, headers=key_headers)
+        assert r.status_code == 422 and r.json()["code"] == "INVALID_PAYLOAD", (body, r.text)
     good = [
         make_event(event_type="user.activity", payload={"user_id": "u", "action": "login"}),
         make_event(event_type="app.error", payload={"service": "api", "message": "boom"}),
         make_event(event_type="service.health", payload={"service": "db", "status": "degraded"}),
         make_event(event_type="payment.failed", payload={"payment_id": "p", "amount": 0, "currency": "eur"}),
     ]
-    for body in good:
-        assert (await h.client.post(f"{API}/events", json=body, headers=key_headers)).status_code == 202
+    assert all(client.post(EV, json=b, headers=key_headers).status_code == 202 for b in good)
 
 
-async def test_nul_character_and_deep_nesting_rejected(h, key_headers):
-    nul = make_event(event_type="custom.x", payload={"text": "a\u0000b"})
-    assert (await h.client.post(f"{API}/events", json=nul, headers=key_headers)).status_code == 422
+def test_nul_character_and_deep_nesting_rejected(client, key_headers):
+    assert client.post(EV, json=make_event(event_type="custom.x", payload={"text": "a\u0000b"}), headers=key_headers).status_code == 422
     deep: dict = {}
     cur = deep
     for _ in range(15):
         cur["n"] = {}
         cur = cur["n"]
-    r = await h.client.post(f"{API}/events", json=make_event(event_type="custom.x", payload=deep), headers=key_headers)
-    assert r.status_code == 422 and r.json()["error"]["code"] == "INVALID_PAYLOAD"
+    r = client.post(EV, json=make_event(event_type="custom.x", payload=deep), headers=key_headers)
+    assert r.status_code == 422 and r.json()["code"] == "INVALID_PAYLOAD"
 
 
-async def test_tenant_isolation(h, admin_headers):
-    key = (await h.client.post(f"{API}/api-keys", headers=admin_headers, json={"name": "acme", "customer_id": "acme"})).json()["key"]
+def test_tenant_isolation(client, admin_headers):
+    key = client.post(K, headers=admin_headers, json={"name": "acme", "customer_id": "acme"}).json()["key"]
     kh = {"X-API-Key": key}
-    r = await h.client.post(f"{API}/events", json=make_event(customer_id="globex"), headers=kh)
-    assert r.status_code == 403 and r.json()["error"]["code"] == "CUSTOMER_MISMATCH"
-    assert await count_events(h) == 0
-
-    ok = await h.client.post(f"{API}/events", json=make_event(event_id="t-1", customer_id="acme"), headers=kh)
-    implicit = await h.client.post(f"{API}/events", json=make_event(event_id="t-2"), headers=kh)  # no customer_id -> stamped
-    assert ok.status_code == implicit.status_code == 202
-    assert await count_events(h, customer_id="acme") == 2
-
-    batch = await h.client.post(f"{API}/events/batch", headers=kh, json={"events": [
-        make_event(event_id="t-3", customer_id="acme"), make_event(event_id="t-4", customer_id="globex")]})
-    d = batch.json()
+    r = client.post(EV, json=make_event(customer_id="globex"), headers=kh)
+    assert r.status_code == 403 and r.json()["code"] == "CUSTOMER_MISMATCH" and count_events() == 0
+    assert client.post(EV, json=make_event(event_id="t-1", customer_id="acme"), headers=kh).status_code == 202
+    assert client.post(EV, json=make_event(event_id="t-2"), headers=kh).status_code == 202  # stamped with the tenant
+    assert count_events(customer_id="acme") == 2
+    d = client.post(EVB, headers=kh, json={"events": [make_event(event_id="t-3", customer_id="acme"),
+                                                      make_event(event_id="t-4", customer_id="globex")]}).json()
     assert (d["accepted"], d["rejected"]) == (1, 1) and d["results"][1]["code"] == "customer_mismatch"
-    assert await count_events(h, customer_id="globex") == 0
-
-    # an un-scoped key may write for any customer
-    free = (await h.client.post(f"{API}/api-keys", headers=admin_headers, json={"name": "platform"})).json()["key"]
-    assert (await h.client.post(f"{API}/events", json=make_event(customer_id="globex"), headers={"X-API-Key": free})).status_code == 202
-    listed = await h.client.get(f"{API}/events?customer_id=acme", headers=admin_headers)
-    assert listed.json()["total"] == 3
+    assert count_events(customer_id="globex") == 0
+    free = client.post(K, headers=admin_headers, json={"name": "platform"}).json()["key"]  # un-scoped key: any customer
+    assert client.post(EV, json=make_event(customer_id="globex"), headers={"X-API-Key": free}).status_code == 202
+    assert client.get(EV, params={"customer_id": "acme"}, headers=admin_headers).json()["result"]["count"] == 3
 
 
-async def test_http_idempotency_key_replays_response(h, key_headers):
+def test_http_idempotency_key_replays_response(client, key_headers):
     body = make_event(event_id="idem-1")
     hdr = {**key_headers, "Idempotency-Key": "req-abc-123"}
-    a = await h.client.post(f"{API}/events", json=body, headers=hdr)
-    b = await h.client.post(f"{API}/events", json=body, headers=hdr)
-    assert a.status_code == b.status_code == 202  # replayed (a plain retry would have been 200 "duplicate")
-    assert b.headers["idempotent-replayed"] == "true" and a.json() == b.json()
-    assert "idempotent-replayed" not in a.headers
-    clash = await h.client.post(f"{API}/events", json=make_event(event_id="idem-2"), headers=hdr)
-    assert clash.status_code == 409 and clash.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
-    assert (await h.client.post(f"{API}/events", json=body, headers={**key_headers, "Idempotency-Key": "bad key"})).status_code in (422, 400)
+    a = client.post(EV, json=body, headers=hdr)
+    b = client.post(EV, json=body, headers=hdr)
+    assert a.status_code == b.status_code == 202  # replayed (a plain retry would be 200 "duplicate")
+    assert b.headers["idempotent-replayed"] == "true" and a.json() == b.json() and "idempotent-replayed" not in a.headers
+    clash = client.post(EV, json=make_event(event_id="idem-2"), headers=hdr)
+    assert clash.status_code == 409 and clash.json()["code"] == "IDEMPOTENCY_KEY_REUSED"
+    assert client.post(EV, json=body, headers={**key_headers, "Idempotency-Key": "bad key"}).status_code == 422
 
     bb = {"events": [make_event(event_id="idem-b1"), make_event(event_id="idem-b2")]}
     h2 = {**key_headers, "Idempotency-Key": "batch-1"}
-    r1 = await h.client.post(f"{API}/events/batch", json=bb, headers=h2)
-    r2 = await h.client.post(f"{API}/events/batch", json=bb, headers=h2)
+    r1, r2 = client.post(EVB, json=bb, headers=h2), client.post(EVB, json=bb, headers=h2)
     assert r1.json() == r2.json() and r2.json()["accepted"] == 2 and r2.headers["idempotent-replayed"] == "true"
-    # a retry WITHOUT the header is handled by event-level dedup instead
-    r3 = await h.client.post(f"{API}/events/batch", json=bb, headers=key_headers)
+    r3 = client.post(EVB, json=bb, headers=key_headers)  # without the header: event-level dedup instead
     assert r3.json()["duplicates"] == 2 and r3.json()["accepted"] == 0
