@@ -28,17 +28,30 @@ def upgrade() -> None:
     # ====== ROLE_PERMISSION TABLE ======
     # Step 1: Add created_at column with default
     # The server_default ensures existing rows get a value automatically
-    op.add_column('role_permission', 
-        sa.Column('created_at', 
-                  sa.DateTime(timezone=True), 
-                  server_default=sa.text('CURRENT_TIMESTAMP'), 
+    op.add_column('role_permission',
+        sa.Column('created_at',
+                  sa.DateTime(timezone=True),
+                  server_default=sa.text('CURRENT_TIMESTAMP'),
                   nullable=False))
-    
+
     # Step 2: Update foreign keys to add CASCADE
-    # Drop existing foreign keys
-    op.drop_constraint('role_permission_permission_id_fkey', 'role_permission', type_='foreignkey')
-    op.drop_constraint('role_permission_role_id_fkey', 'role_permission', type_='foreignkey')
-    
+    # Drop all existing foreign keys on role_permission table
+    op.execute("""
+        DO $$
+        DECLARE
+            con_name TEXT;
+        BEGIN
+            FOR con_name IN
+                SELECT conname
+                FROM pg_constraint
+                WHERE conrelid = 'role_permission'::regclass
+                AND contype = 'f'
+            LOOP
+                EXECUTE 'ALTER TABLE role_permission DROP CONSTRAINT ' || con_name;
+            END LOOP;
+        END $$;
+    """)
+
     # Create new foreign keys with CASCADE
     op.create_foreign_key(
         'role_permission_permission_id_fkey',  # Named constraint for easier management
@@ -64,11 +77,25 @@ def upgrade() -> None:
                   sa.DateTime(timezone=True),
                   server_default=sa.text('CURRENT_TIMESTAMP'),
                   nullable=False))
-    
+
     # Update foreign keys to add CASCADE
-    op.drop_constraint('user_permission_permission_id_fkey', 'user_permission', type_='foreignkey')
-    op.drop_constraint('user_permission_user_id_fkey', 'user_permission', type_='foreignkey')
-    
+    # Drop all existing foreign keys on user_permission table
+    op.execute("""
+        DO $$
+        DECLARE
+            con_name TEXT;
+        BEGIN
+            FOR con_name IN
+                SELECT conname
+                FROM pg_constraint
+                WHERE conrelid = 'user_permission'::regclass
+                AND contype = 'f'
+            LOOP
+                EXECUTE 'ALTER TABLE user_permission DROP CONSTRAINT ' || con_name;
+            END LOOP;
+        END $$;
+    """)
+
     op.create_foreign_key(
         'user_permission_permission_id_fkey',
         'user_permission', 'permissions',
@@ -89,11 +116,25 @@ def upgrade() -> None:
                   sa.DateTime(timezone=True),
                   server_default=sa.text('CURRENT_TIMESTAMP'),
                   nullable=False))
-    
+
     # Update foreign keys to add CASCADE
-    op.drop_constraint('user_role_user_id_fkey', 'user_role', type_='foreignkey')
-    op.drop_constraint('user_role_role_id_fkey', 'user_role', type_='foreignkey')
-    
+    # Drop all existing foreign keys on user_role table
+    op.execute("""
+        DO $$
+        DECLARE
+            con_name TEXT;
+        BEGIN
+            FOR con_name IN
+                SELECT conname
+                FROM pg_constraint
+                WHERE conrelid = 'user_role'::regclass
+                AND contype = 'f'
+            LOOP
+                EXECUTE 'ALTER TABLE user_role DROP CONSTRAINT ' || con_name;
+            END LOOP;
+        END $$;
+    """)
+
     op.create_foreign_key(
         'user_role_user_id_fkey',
         'user_role', 'users',
