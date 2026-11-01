@@ -18,9 +18,9 @@ def test_models_and_migrations_are_in_sync():
 
 
 def test_single_head_and_full_downgrade_upgrade_cycle():
-    heads = alembic("heads")
-    assert heads.returncode == 0 and heads.stdout.count("(head)") == 1
-    assert alembic("downgrade", "base").returncode == 0
+    assert alembic("heads").stdout.count("(head)") == 1
+    down = alembic("downgrade", "base")
+    assert down.returncode == 0, down.stderr[-800:]
     up = alembic("upgrade", "head")
-    assert up.returncode == 0, up.stderr
+    assert up.returncode == 0, up.stderr[-800:]
     assert alembic("current").returncode == 0
