@@ -225,7 +225,7 @@ pip install -r requirements-dev.txt
 ### 3️⃣ Create the database & application role
 1. Edit `scripts\setup_database.sql` and replace `CHANGE_ME_STRONG_PASSWORD`.
 2. Run it as the superuser: `psql -U postgres -h localhost -f scripts/setup_database.sql`
-3. Verify: `psql -U streampulse_app -h localhost -d streampulse_db -c "select current_user;"`
+3. Verify: `psql -U streampulse_app -h localhost -d "StreamPulse_FastAPI_Next_JS" -c "select current_user;"`
 
 ### 4️⃣ Configure `.env`
 ```powershell
@@ -268,7 +268,7 @@ Note: `users.role_id → roles` and `roles.created_by_user_id → users` referen
 |---|------|-----------|----------------|---------------|
 | 1 | **PostgreSQL superuser password** | Admin of your local PostgreSQL | Set at install | Used **once** for the setup SQL; the app never uses it |
 | 2 | **`streampulse_app` role + password** | Least-privilege, non-superuser DB role | `DATABASE_URL` | `scripts/setup_database.sql` |
-| 3 | **Databases** `streampulse_db`, `streampulse_test` | App data / isolated test data | PostgreSQL | same SQL file |
+| 3 | **Databases** `StreamPulse_FastAPI_Next_JS`, `StreamPulse_FastAPI_Next_JS_test` | App data / isolated test data | PostgreSQL | same SQL file |
 | 4 | **`SECRET_KEY`** | Signs JWTs. A leak lets anyone forge a login | `.env` | `python -m scripts.generate_secrets` — changing it logs everyone out |
 | 5 | **`API_KEY_PEPPER`** | HMAC key in API-key hashes | `.env` | same script — **changing it invalidates every API key** |
 | 6 | **First superuser** | The only way in initially | `users` table | `python populate.py` (no public sign-up exists) |
@@ -558,7 +558,7 @@ Window = `[from, to)` on `received_at` (default last 24 h); everything is comput
 
 ## 🧪 Testing
 
-Tests run against a **separate database** and refuse to run unless its name ends in `_test` (derived from `DATABASE_URL`: `streampulse_db` → `streampulse_test`; override with `TEST_DATABASE_URL`). The schema is built with the **real Alembic migrations** on every run.
+Tests run against a **separate database** and refuse to run unless its name ends in `_test` (derived from `DATABASE_URL`: `StreamPulse_FastAPI_Next_JS` → `StreamPulse_FastAPI_Next_JS_test`; override with `TEST_DATABASE_URL`). The schema is built with the **real Alembic migrations** on every run.
 ```powershell
 pytest                                # everything (~2 min)
 pytest tests/test_ingestion.py -q
@@ -616,14 +616,14 @@ Throughput is bounded by one Python process plus database round-trips on one sha
 | `psql` not recognized | Add `C:\Program Files\PostgreSQL\<ver>\bin` to PATH |
 | `password authentication failed for user "streampulse_app"` | `.env` password ≠ the one in `setup_database.sql`; URL-encode special characters; reset with `ALTER ROLE streampulse_app PASSWORD '…'` |
 | App exits "PostgreSQL is unreachable" / connection refused | Start the *postgresql-x64-NN* service (`services.msc`); check `Get-NetTCPConnection -LocalPort 5432` |
-| `database "streampulse_db" does not exist` | Run `scripts/setup_database.sql` |
+| `database "StreamPulse_FastAPI_Next_JS" does not exist` | Run `scripts/setup_database.sql` |
 | `permission denied for schema public` | Re-run the `GRANT ALL ON SCHEMA public …` lines as `postgres` (PostgreSQL 15+) |
 | `this project uses synchronous SQLAlchemy: use postgresql+psycopg2://` | You used an `+asyncpg` URL; use `postgresql+psycopg2://…` |
 | `SECRET_KEY … at least 32 characters` | `python -m scripts.generate_secrets` |
 | `Activate.ps1 cannot be loaded` | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
 | `pip install` fails building a package | Use 64-bit Python 3.11/3.12; upgrade pip (`psycopg2-binary` ships Windows wheels) |
 | Login says `NO_ROLE_ASSIGNED` | A non-superuser needs a role (or direct permissions) — assign one |
-| Tests: "test database name must end with '_test'" | Create `streampulse_test` or set `TEST_DATABASE_URL` |
+| Tests: "test database name must end with '_test'" | Create `StreamPulse_FastAPI_Next_JS_test` or set `TEST_DATABASE_URL` |
 | `503 QUEUE_FULL` under load | Expected back-pressure: honour `Retry-After`, raise `EVENT_WORKER_CONCURRENCY`/`EVENT_QUEUE_MAXSIZE` |
 | `QueuePool limit … timed out` | Raise `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` (or reduce concurrent clients) |
 | Port 8000 busy | edit the port in `main.py`, or `uvicorn app.main:app --port 8001` |
@@ -924,7 +924,7 @@ pip install -r requirements-dev.txt
 ### 3️⃣ Create the database & application role
 1. Edit `scripts\setup_database.sql` and replace `CHANGE_ME_STRONG_PASSWORD`.
 2. Run it as the superuser: `psql -U postgres -h localhost -f scripts/setup_database.sql`
-3. Verify: `psql -U streampulse_app -h localhost -d streampulse_db -c "select current_user;"`
+3. Verify: `psql -U streampulse_app -h localhost -d "StreamPulse_FastAPI_Next_JS" -c "select current_user;"`
 
 ### 4️⃣ Configure `.env`
 ```powershell
@@ -967,7 +967,7 @@ Note: `users.role_id → roles` and `roles.created_by_user_id → users` referen
 |---|------|-----------|----------------|---------------|
 | 1 | **PostgreSQL superuser password** | Admin of your local PostgreSQL | Set at install | Used **once** for the setup SQL; the app never uses it |
 | 2 | **`streampulse_app` role + password** | Least-privilege, non-superuser DB role | `DATABASE_URL` | `scripts/setup_database.sql` |
-| 3 | **Databases** `streampulse_db`, `streampulse_test` | App data / isolated test data | PostgreSQL | same SQL file |
+| 3 | **Databases** `StreamPulse_FastAPI_Next_JS`, `StreamPulse_FastAPI_Next_JS_test` | App data / isolated test data | PostgreSQL | same SQL file |
 | 4 | **`SECRET_KEY`** | Signs JWTs. A leak lets anyone forge a login | `.env` | `python -m scripts.generate_secrets` — changing it logs everyone out |
 | 5 | **`API_KEY_PEPPER`** | HMAC key in API-key hashes | `.env` | same script — **changing it invalidates every API key** |
 | 6 | **First superuser** | The only way in initially | `users` table | `python populate.py` (no public sign-up exists) |
@@ -1257,7 +1257,7 @@ Window = `[from, to)` on `received_at` (default last 24 h); everything is comput
 
 ## 🧪 Testing
 
-Tests run against a **separate database** and refuse to run unless its name ends in `_test` (derived from `DATABASE_URL`: `streampulse_db` → `streampulse_test`; override with `TEST_DATABASE_URL`). The schema is built with the **real Alembic migrations** on every run.
+Tests run against a **separate database** and refuse to run unless its name ends in `_test` (derived from `DATABASE_URL`: `StreamPulse_FastAPI_Next_JS` → `StreamPulse_FastAPI_Next_JS_test`; override with `TEST_DATABASE_URL`). The schema is built with the **real Alembic migrations** on every run.
 ```powershell
 pytest                                # everything (~2 min)
 pytest tests/test_ingestion.py -q
@@ -1315,14 +1315,14 @@ Throughput is bounded by one Python process plus database round-trips on one sha
 | `psql` not recognized | Add `C:\Program Files\PostgreSQL\<ver>\bin` to PATH |
 | `password authentication failed for user "streampulse_app"` | `.env` password ≠ the one in `setup_database.sql`; URL-encode special characters; reset with `ALTER ROLE streampulse_app PASSWORD '…'` |
 | App exits "PostgreSQL is unreachable" / connection refused | Start the *postgresql-x64-NN* service (`services.msc`); check `Get-NetTCPConnection -LocalPort 5432` |
-| `database "streampulse_db" does not exist` | Run `scripts/setup_database.sql` |
+| `database "StreamPulse_FastAPI_Next_JS" does not exist` | Run `scripts/setup_database.sql` |
 | `permission denied for schema public` | Re-run the `GRANT ALL ON SCHEMA public …` lines as `postgres` (PostgreSQL 15+) |
 | `this project uses synchronous SQLAlchemy: use postgresql+psycopg2://` | You used an `+asyncpg` URL; use `postgresql+psycopg2://…` |
 | `SECRET_KEY … at least 32 characters` | `python -m scripts.generate_secrets` |
 | `Activate.ps1 cannot be loaded` | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
 | `pip install` fails building a package | Use 64-bit Python 3.11/3.12; upgrade pip (`psycopg2-binary` ships Windows wheels) |
 | Login says `NO_ROLE_ASSIGNED` | A non-superuser needs a role (or direct permissions) — assign one |
-| Tests: "test database name must end with '_test'" | Create `streampulse_test` or set `TEST_DATABASE_URL` |
+| Tests: "test database name must end with '_test'" | Create `StreamPulse_FastAPI_Next_JS_test` or set `TEST_DATABASE_URL` |
 | `503 QUEUE_FULL` under load | Expected back-pressure: honour `Retry-After`, raise `EVENT_WORKER_CONCURRENCY`/`EVENT_QUEUE_MAXSIZE` |
 | `QueuePool limit … timed out` | Raise `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` (or reduce concurrent clients) |
 | Port 8000 busy | edit the port in `main.py`, or `uvicorn app.main:app --port 8001` |
