@@ -34,8 +34,3 @@ class Employee(TimeUserStampMixin, Base):
         uselist=False,
         foreign_keys=[user_id]
     )
-
-    # Override UserStampMixin back_populates
-    creator = relationship("User", foreign_keys=[created_by_user_id], back_populates="created_employees")
-    updater = relationship("User", foreign_keys=[updated_by_user_id], back_populates="updated_employees")
-    deleter = relationship("User", foreign_keys=[deleted_by_user_id], back_populates="deleted_employees")
