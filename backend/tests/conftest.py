@@ -1,7 +1,7 @@
 """Test harness.
 
 Safety: tests ONLY run against a database whose name ends in `_test`. Set TEST_DATABASE_URL, or let it be derived
-from DATABASE_URL (`streampulse_db` -> `streampulse_test`). The dev database is never touched.
+from DATABASE_URL (`StreamPulse_FastAPI_Next_JS` -> `StreamPulse_FastAPI_Next_JS_test`). The dev database is never touched.
 """
 from __future__ import annotations
 
@@ -22,12 +22,12 @@ def _derive_test_url() -> str:
         return explicit
     base = os.environ.get("DATABASE_URL") or dotenv_values(ROOT / ".env").get("DATABASE_URL")
     if not base:
-        pytest.exit("Set TEST_DATABASE_URL (e.g. postgresql+psycopg2://streampulse_app:PASSWORD@localhost:5432/streampulse_test)", 2)
+        pytest.exit("Set TEST_DATABASE_URL (e.g. postgresql+psycopg2://streampulse_app:PASSWORD@localhost:5432/StreamPulse_FastAPI_Next_JS_test)", 2)
     head, _, name = base.rpartition("/")
     name = name.split("?")[0]
     if name.endswith("_test"):
         return base
-    stem = name[:-3] if name.endswith("_db") else name  # streampulse_db -> streampulse_test
+    stem = name[:-3] if name.endswith("_db") else name  # streampulse_db -> streampulse_test, or just append _test
     return f"{head}/{stem}_test"
 
 
