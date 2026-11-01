@@ -1,27 +1,25 @@
-import uuid
-from datetime import datetime
+# app/models/api_key.py
+from sqlalchemy import ARRAY, Boolean, Column, DateTime, Integer, String, Text, true
 
-from sqlalchemy import ARRAY, Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid, true
-from sqlalchemy.orm import Mapped, mapped_column
-
-from app.database import Base, TimestampMixin
+from app.database import Base
+from app.models.mixins import TimeUserStampMixin
 
 
-class APIKey(TimestampMixin, Base):
+class APIKey(TimeUserStampMixin, Base):
+    """Credential for an event-producing application (independent of dashboard users)."""
+
     __tablename__ = "api_keys"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
-    description: Mapped[str | None] = mapped_column(String(255))
-    # Lookup handle (non-secret). The full key is verified against `key_hash`.
-    key_prefix: Mapped[str] = mapped_column(String(16), unique=True, nullable=False)
-    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("users.id", ondelete="SET NULL"))
-    customer_id: Mapped[str | None] = mapped_column(String(100))
-    scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, server_default=true(), nullable=False)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    rate_limit_per_minute: Mapped[int] = mapped_column(Integer, nullable=False)
-    daily_event_quota: Mapped[int | None] = mapped_column(Integer)
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(String(255), nullable=True)
+    key_prefix = Column(String(16), unique=True, nullable=False)  # non-secret lookup handle
+    key_hash = Column(String(64), nullable=False)                 # HMAC-SHA256(pepper, full key)
+    customer_id = Column(String(100), nullable=True)              # tenant lock
+    scopes = Column(ARRAY(Text), nullable=False)
+    is_active = Column(Boolean, server_default=true(), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    rate_limit_per_minute = Column(Integer, nullable=False)
+    daily_event_quota = Column(Integer, nullable=True)
