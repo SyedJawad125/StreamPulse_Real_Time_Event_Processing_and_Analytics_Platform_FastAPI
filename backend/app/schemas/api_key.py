@@ -1,45 +1,57 @@
-import uuid
+# app/schemas/api_key.py
 from datetime import datetime
+from typing import List, Optional
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from app.schemas.base import TimeUserStampSchema
+
 
 class APIKeyCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    description: str | None = Field(default=None, max_length=255)
-    customer_id: str | None = Field(default=None, max_length=100, description="Restricts the key to this tenant")
-    scopes: list[str] = Field(default_factory=lambda: ["events.ingest"], max_length=10)
-    expires_at: AwareDatetime | None = None
-    rate_limit_per_minute: int | None = Field(default=None, ge=1, le=100_000)
-    daily_event_quota: int | None = Field(default=None, ge=1)
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=255)
+    customer_id: Optional[str] = Field(None, max_length=100, description="Locks the key to this tenant")
+    scopes: List[str] = Field(default_factory=lambda: ["ingest_event"], max_length=10)
+    expires_at: Optional[AwareDatetime] = None
+    rate_limit_per_minute: Optional[int] = Field(None, ge=1, le=100_000)
+    daily_event_quota: Optional[int] = Field(None, ge=1)
+    model_config = ConfigDict(extra="forbid")
 
 
 class APIKeyUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=100)
-    description: str | None = Field(default=None, max_length=255)
-    expires_at: AwareDatetime | None = None
-    rate_limit_per_minute: int | None = Field(default=None, ge=1, le=100_000)
-    daily_event_quota: int | None = Field(default=None, ge=1)
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=255)
+    expires_at: Optional[AwareDatetime] = None
+    rate_limit_per_minute: Optional[int] = Field(None, ge=1, le=100_000)
+    daily_event_quota: Optional[int] = Field(None, ge=1)
+    model_config = ConfigDict(extra="forbid")
 
 
-class APIKeyOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: uuid.UUID
+class APIKeyOut(TimeUserStampSchema):
+    id: int
     name: str
-    description: str | None = None
+    description: Optional[str] = None
     key_prefix: str
-    owner_user_id: uuid.UUID | None = None
-    customer_id: str | None = None
-    scopes: list[str]
+    customer_id: Optional[str] = None
+    scopes: List[str]
     is_active: bool
-    revoked_at: datetime | None = None
-    expires_at: datetime | None = None
-    last_used_at: datetime | None = None
+    revoked_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
     rate_limit_per_minute: int
-    daily_event_quota: int | None = None
-    created_at: datetime
-    updated_at: datetime
+    daily_event_quota: Optional[int] = None
+    model_config = ConfigDict(from_attributes=True)
 
 
 class APIKeyCreated(APIKeyOut):
     key: str = Field(description="Plaintext API key. Shown ONCE; store it securely.")
+
+
+class PaginatedAPIKeys(BaseModel):
+    count: int
+    data: List[APIKeyOut]
+
+
+class APIKeyListResponse(BaseModel):
+    status: str
+    result: PaginatedAPIKeys
