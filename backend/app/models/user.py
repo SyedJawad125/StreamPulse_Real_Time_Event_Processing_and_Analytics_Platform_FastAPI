@@ -31,36 +31,8 @@ class User(TimeStampMixin, Base):
     # Permissions granted directly to the user (many-to-many)
     permissions = relationship("Permission", secondary=user_permission, back_populates="users")
 
-    # Objects created / updated / deleted by this user (mirror UserStampMixin's back_populates)
-    created_roles = relationship("Role", back_populates="creator", foreign_keys="Role.created_by_user_id")
-    updated_roles = relationship("Role", back_populates="updater", foreign_keys="Role.updated_by_user_id")
-    deleted_roles = relationship("Role", back_populates="deleter", foreign_keys="Role.deleted_by_user_id")
-
-    created_permissions = relationship("Permission", back_populates="creator", foreign_keys="Permission.created_by_user_id")
-    updated_permissions = relationship("Permission", back_populates="updater", foreign_keys="Permission.updated_by_user_id")
-    deleted_permissions = relationship("Permission", back_populates="deleter", foreign_keys="Permission.deleted_by_user_id")
-
-    created_api_keys = relationship("APIKey", back_populates="creator", foreign_keys="APIKey.created_by_user_id")
-    updated_api_keys = relationship("APIKey", back_populates="updater", foreign_keys="APIKey.updated_by_user_id")
-    deleted_api_keys = relationship("APIKey", back_populates="deleter", foreign_keys="APIKey.deleted_by_user_id")
-
     # Employee relationship (one-to-one: a user can have one employee profile)
     employee = relationship("Employee", back_populates="user", uselist=False, foreign_keys="Employee.user_id")
-
-    # Objects created / updated / deleted by this user (mirror UserStampMixin's back_populates)
-    created_employees = relationship("Employee", back_populates="creator", foreign_keys="Employee.created_by_user_id")
-    updated_employees = relationship("Employee", back_populates="updater", foreign_keys="Employee.updated_by_user_id")
-    deleted_employees = relationship("Employee", back_populates="deleter", foreign_keys="Employee.deleted_by_user_id")
-
-    # Image relationships
-    created_images = relationship("Image", back_populates="creator", foreign_keys="Image.created_by_user_id")
-    updated_images = relationship("Image", back_populates="updater", foreign_keys="Image.updated_by_user_id")
-    deleted_images = relationship("Image", back_populates="deleter", foreign_keys="Image.deleted_by_user_id")
-
-    # ImageCategory relationships
-    created_image_categories = relationship("ImageCategory", back_populates="creator", foreign_keys="ImageCategory.created_by_user_id")
-    updated_image_categories = relationship("ImageCategory", back_populates="updater", foreign_keys="ImageCategory.updated_by_user_id")
-    deleted_image_categories = relationship("ImageCategory", back_populates="deleter", foreign_keys="ImageCategory.deleted_by_user_id")
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}')>"
