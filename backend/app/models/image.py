@@ -14,11 +14,6 @@ class ImageCategory(TimeUserStampMixin, Base):
     # Relationship with Images
     images = relationship("Image", back_populates="category")
 
-    # Override UserStampMixin back_populates to use underscores
-    creator = relationship("User", foreign_keys=[created_by_user_id], back_populates="created_image_categories")
-    updater = relationship("User", foreign_keys=[updated_by_user_id], back_populates="updated_image_categories")
-    deleter = relationship("User", foreign_keys=[deleted_by_user_id], back_populates="deleted_image_categories")
-
 
 class Image(TimeUserStampMixin, Base):
     __tablename__ = "images"
@@ -35,8 +30,3 @@ class Image(TimeUserStampMixin, Base):
     # Category relationship
     category_id = Column(Integer, ForeignKey("imagecategories.id"), nullable=True)
     category = relationship("ImageCategory", back_populates="images", lazy="joined")
-
-    # Override UserStampMixin back_populates
-    creator = relationship("User", foreign_keys=[created_by_user_id], back_populates="created_images")
-    updater = relationship("User", foreign_keys=[updated_by_user_id], back_populates="updated_images")
-    deleter = relationship("User", foreign_keys=[deleted_by_user_id], back_populates="deleted_images")
